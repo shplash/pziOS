@@ -57,3 +57,14 @@ open pziOS.xcodeproj      # scheme pziOS (device) or ZomUIPreview (simulator, la
 ```
 
 Set your own team and bundle identifier in `project.yml`. Install, then use the in-app Setup guide for the game files and JIT.
+
+## 7. Building in CI
+
+`.github/workflows/build.yml` compiles the launcher UI target on every push (the device target cannot be built from the
+repository alone). `.github/workflows/ipa.yml` builds an unsigned IPA with `scripts/make-ipa.sh`, on demand from the
+Actions tab or on a `v*` tag, and uploads it as the `pziOS-ipa` artifact.
+
+The IPA job needs the compiled parts from steps 1-5. By default it takes them from the last upstream release IPA; set
+the repository variable `PZIOS_SOURCE_IPA_URL` to use another one, or `PZIOS_BINARIES_URL` to a zip whose top level holds
+`runtime/` and `Frameworks/` (your own build of them). The resulting IPA contains the JRE and the game's libraries from
+that source, so keep the artifact private.

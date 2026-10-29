@@ -1,18 +1,15 @@
 name: IPA
 
-# Builds an unsigned (ad-hoc signed) IPA from this repository, the same way scripts/make-ipa.sh does on a Mac.
+# Builds an unsigned (ad-hoc signed) IPA from this repository, the way scripts/make-ipa.sh does on a Mac.
 #
-# The device build needs files that are not in the repository (docs/BUILDING.md): the bundled JRE, MetalANGLE,
-# StikJIT and our native libraries, plus the game's own converted libraries if you want an IPA that includes them.
-# Put them in one zip laid out like:
+# The device build needs compiled parts that are not in the repository (docs/BUILDING.md): the bundled JRE, MetalANGLE,
+# StikJIT and our native libraries, plus the game's own converted libraries. Two ways to supply them:
 #
-#     runtime/jre/…            runtime/natives/…
-#     Frameworks/MetalANGLE.framework/…   Frameworks/StikJIT.xcframework/…
+#   1. PZIOS_BINARIES_URL: a zip (or .tar.gz) at a direct URL whose top level holds runtime/ and Frameworks/.
+#   2. Nothing set: the workflow takes those parts out of the upstream release IPA and rebuilds the app with this fork's
+#      sources. Point PZIOS_SOURCE_IPA_URL at another IPA to use a different one.
 #
-# host it somewhere reachable (a release asset of your own works), and set the repository variable
-# PZIOS_BINARIES_URL to the direct download URL. Without it the check step stops with a message saying what is
-# missing instead of failing somewhere deep in Xcode.
-#
+# The result contains that release's JRE and game libraries, so keep the artifact to yourself.
 # Every run leaves pziOS-ipa as an artifact; a tag push (v*) also attaches it to that release.
 
 on:
@@ -24,6 +21,7 @@ jobs:
   ipa:
     name: Unsigned IPA
     runs-on: macos-15
+    timeout-minutes: 45
     permissions:
       contents: write          # only used to attach the IPA to a release on tag pushes
     steps:
@@ -32,24 +30,50 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Unpack the build inputs (PZIOS_BINARIES_URL)
+      - name: Unpack the build inputs
         env:
-          URL: ${{ vars.PZIOS_BINARIES_URL }}
+          ZIP_URL: ${{ vars.PZIOS_BINARIES_URL }}
+          SOURCE_IPA_URL: ${{ vars.PZIOS_SOURCE_IPA_URL }}
         run: |
           set -euo pipefail
-          if [ -z "${URL:-}" ]; then
-            echo "PZIOS_BINARIES_URL is not set: skipping (the check step will say what is missing)."
-            exit 0
-          fi
-          mkdir -p "$RUNNER_TEMP/binaries"
-          curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/binaries/payload" "$URL"
-          case "$URL" in
-            *.zip) unzip -q -o "$RUNNER_TEMP/binaries/payload" -d "$RUNNER_TEMP/binaries" ;;
-            *)     tar -xzf "$RUNNER_TEMP/binaries/payload" -C "$RUNNER_TEMP/binaries" ;;
-          esac
           rm -rf HostApp/runtime HostApp/Frameworks
-          [ -d "$RUNNER_TEMP/binaries/runtime" ]    && cp -R "$RUNNER_TEMP/binaries/runtime" HostApp/runtime
-          [ -d "$RUNNER_TEMP/binaries/Frameworks" ] && cp -R "$RUNNER_TEMP/binaries/Frameworks" HostApp/Frameworks
+
+          if [ -n "${ZIP_URL:-}" ]; then
+            echo "Using PZIOS_BINARIES_URL"
+            mkdir -p "$RUNNER_TEMP/inputs"
+            curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/inputs/payload" "$ZIP_URL"
+            case "$ZIP_URL" in
+              *.zip) unzip -q -o "$RUNNER_TEMP/inputs/payload" -d "$RUNNER_TEMP/inputs" ;;
+              *)     tar -xzf "$RUNNER_TEMP/inputs/payload" -C "$RUNNER_TEMP/inputs" ;;
+            esac
+            [ -d "$RUNNER_TEMP/inputs/runtime" ]    && cp -R "$RUNNER_TEMP/inputs/runtime" HostApp/runtime
+            [ -d "$RUNNER_TEMP/inputs/Frameworks" ] && cp -R "$RUNNER_TEMP/inputs/Frameworks" HostApp/Frameworks
+          else
+            DEFAULT_IPA="https://github.com/onlyknt/pziOS/releases/download/pziOS/pziOS-0.9.0-beta.5-b42.21.ipa"
+            URL="${SOURCE_IPA_URL:-$DEFAULT_IPA}"
+            echo "Using the compiled parts of $URL"
+            curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/source.ipa" "$URL"
+            mkdir -p "$RUNNER_TEMP/source"
+            unzip -q "$RUNNER_TEMP/source.ipa" -d "$RUNNER_TEMP/source"
+
+            APP=$(find "$RUNNER_TEMP/source/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)
+            [ -n "$APP" ] || { echo "::error::The source IPA has no Payload/*.app"; exit 1; }
+            RUNTIME=$(find "$APP" -maxdepth 1 -type d -name runtime -print -quit)
+            [ -n "$RUNTIME" ] || { echo "::error::The source IPA has no runtime/ folder (the JRE and the native libraries)"; exit 1; }
+            cp -R "$RUNTIME" HostApp/runtime
+
+            mkdir -p HostApp/Frameworks
+            METAL=$(find "$APP" -maxdepth 3 -name 'MetalANGLE.framework' -type d -print -quit)
+            [ -n "$METAL" ] || { echo "::error::The source IPA has no MetalANGLE.framework"; exit 1; }
+            cp -R "$METAL" HostApp/Frameworks/
+
+            # The helper links StikJIT.framework; project.yml expects it inside an xcframework folder for ios-arm64.
+            STIK=$(find "$APP" -name 'StikJIT.framework' -type d -print -quit)
+            [ -n "$STIK" ] || { echo "::error::The source IPA has no StikJIT.framework"; exit 1; }
+            mkdir -p HostApp/Frameworks/StikJIT.xcframework/ios-arm64
+            cp -R "$STIK" HostApp/Frameworks/StikJIT.xcframework/ios-arm64/
+          fi
+
           du -sh HostApp/runtime HostApp/Frameworks 2>/dev/null || true
 
       - name: Check what the device build needs
@@ -59,12 +83,12 @@ jobs:
           need() { if [ ! -e "$1" ]; then echo "missing: $1"; missing=1; fi; }
           need HostApp/runtime/jre/lib/libjli.dylib
           need HostApp/Frameworks/MetalANGLE.framework
-          need HostApp/Frameworks/StikJIT.xcframework
+          need HostApp/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework
           for l in libglfw libGLshim libgl4es_114 libEGLproxy libfmodhal libfmodhal_ca; do
             need "HostApp/runtime/natives/$l.dylib"
           done
           if [ "$missing" = 1 ]; then
-            echo "::error::The device build needs the bundled JRE, MetalANGLE, StikJIT and our native libraries, which are not in this repository. See docs/BUILDING.md; put them in a zip laid out as runtime/ and Frameworks/, host it, and set the repository variable PZIOS_BINARIES_URL to its direct download URL."
+            echo "::error::Those files are not in the repository (docs/BUILDING.md). Set the repository variable PZIOS_BINARIES_URL to a zip whose top level holds runtime/ and Frameworks/, or PZIOS_SOURCE_IPA_URL to a pziOS IPA that contains them."
             exit 1
           fi
 
