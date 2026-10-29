@@ -288,7 +288,7 @@ struct Switch: View {
 }
 
 /// Small uppercase badge, used for BETA, "ready", the connected controller and so on.
-struct Chip: View {
+struct Badge: View {
     let text: String
     var tint: Color = .white
     let m: Metrics
@@ -442,9 +442,9 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: m.v(9)) {
                 Text("pziOS").font(.system(size: m.v(44), weight: .black)).tracking(m.v(-1))
-                Chip(text: "beta", tint: Theme.warning, m: m)
+                Badge(text: "beta", tint: Theme.warning, m: m)
                 Spacer(minLength: 0)
-                if pads.name != nil { Chip(text: "controller", tint: Theme.success, m: m) }
+                if pads.name != nil { Badge(text: "controller", tint: Theme.success, m: m) }
             }
             Text("Project Zomboid on iPhone and iPad")
                 .font(.system(size: m.v(13), weight: .medium)).foregroundStyle(Theme.dim).padding(.top, m.v(1))
@@ -471,7 +471,7 @@ struct LauncherView: View {
             HStack {
                 Text("STATUS").font(.system(size: m.v(10), weight: .bold)).tracking(m.v(1.1)).foregroundStyle(Theme.faint)
                 Spacer()
-                Chip(text: ready ? "ready" : "setup needed", tint: ready ? Theme.success : Theme.warning, m: m)
+                Badge(text: ready ? "ready" : "setup needed", tint: ready ? Theme.success : Theme.warning, m: m)
             }
             VStack(spacing: 0) {
                 StatusRow(icon: "folder.fill", title: "Game files", value: gameValue, tint: installed ? Theme.success : Theme.warning, m: m)

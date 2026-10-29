@@ -4,6 +4,7 @@
 // Ported from Zomdroid's external controller configuration (MIT, see licenses/Zomdroid-MIT.txt).
 import Foundation
 import GameController
+import Combine
 
 /// A physical button, in the order the GLFW layer numbers them: GLFW's standard buttons (A, B, X, Y, LB, RB, Back, Start,
 /// Guide, L3, R3, d-pad up/right/down/left) and then the two triggers, which are axes but count as buttons at half press
@@ -70,6 +71,16 @@ struct ControllerSettings: Codable, Equatable {
         deadZone = try c.decodeIfPresent(Double.self, forKey: .deadZone) ?? 0.15
         buttons = try c.decodeIfPresent([Int].self, forKey: .buttons) ?? Array(0..<15)
         axes = try c.decodeIfPresent([Int].self, forKey: .axes) ?? Array(0..<6)
+    }
+
+    /// Written by hand because the keys are the wire format glfw_ios.m reads, and two of them have their own names
+    /// ("overlay" for overlayAutoHide, "deadzone" for deadZone).
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(overlayAutoHide, forKey: .overlay)
+        try c.encode(deadZone, forKey: .deadZone)
+        try c.encode(buttons, forKey: .buttons)
+        try c.encode(axes, forKey: .axes)
     }
 
     /// Brings a saved (or hand-edited) configuration back into range; the GLFW layer also clamps, this keeps the UI honest.
