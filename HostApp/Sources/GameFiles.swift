@@ -449,7 +449,7 @@ final class GameImporter: ObservableObject {
             let part = dest.appendingPathExtension("part")
             try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? fm.removeItem(at: part)
-            var before = done
+            let before = done
             do {
                 try job.write(part, { n in done += n; tick(job.relative) }, { self.cancelled })
             } catch {
@@ -463,7 +463,6 @@ final class GameImporter: ObservableObject {
             try? fm.removeItem(at: dest)
             try fm.moveItem(at: part, to: dest)
             if let m = job.modified { try? fm.setAttributes([.modificationDate: m], ofItemAtPath: dest.path) }
-            before = done
         }
 
         try fm.createDirectory(at: GameFiles.gameDir, withIntermediateDirectories: true)

@@ -22,8 +22,13 @@ struct ScreenMarginEditor: View {
     }
     private var auto: [Double] { Self.fractions(ZomMargins.autoPoints(device, scale: 1), device) }
 
+    /// Sizes are shown in game pixels, which depends on the render resolution the game will run at (720p by default).
     private func gamePx(_ i: Int) -> Int {
-        let toPx = 720.0 / Double(device.height)
+        let heights = [540.0, 720.0, 900.0, 1080.0]
+        let stored = UserDefaults.standard.object(forKey: "zom.renderRes") == nil
+            ? (UIDevice.current.userInterfaceIdiom == .pad ? 2 : 1)
+            : UserDefaults.standard.integer(forKey: "zom.renderRes")
+        let toPx = heights[min(max(stored, 0), 3)] / Double(device.height)
         return Int(((i % 2 == 0 ? Double(device.width) : Double(device.height)) * f[i] * toPx).rounded())
     }
 

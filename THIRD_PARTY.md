@@ -16,6 +16,7 @@ pziOS uses the following projects. None of their binaries are committed here (Me
 | StikJIT | Built-in JIT enabling (prebuilt `StikJIT.xcframework`, linked by the JIT helper) | https://github.com/StikDebug/StikJIT | MPL-2.0 (`licenses/StikJIT-MPL-2.0.txt`) |
 | StikDebug | Only an optional external tool for the manual JIT script; not included or linked | https://github.com/StikDebug/StikDebug | AGPL-3.0 |
 | GetMoreRam | Reference for the increased-memory-limit entitlement | https://github.com/hugeBlack/GetMoreRam | see repository |
+| Zomdroid | Reference for the external controller remapping, stick deadzone, overlay toggle and live input preview (`HostApp/Sources/ControllerSettings.swift`, `ControllerEditor.swift`, and `pad_read` in `native/glfw-ios/glfw_ios.m`) | https://github.com/etonedemid/zomdroid- (fork of https://github.com/liamelui/zomdroid) | MIT (`licenses/Zomdroid-MIT.txt`) |
 
 The release IPA also contains iOS-converted copies of the native libraries of Project Zomboid Build 42.21 (including FMOD by Firelight Technologies), which belong to their respective owners.
 

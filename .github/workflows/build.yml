@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  launcher:
+    name: Launcher UI (ZomUIPreview)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project from project.yml
+        working-directory: HostApp
+        run: xcodegen generate
+
+      # The device target needs the bundled JRE and MetalANGLE, which are not in the repository (see docs/BUILDING.md), so
+      # CI builds the launcher UI target: it compiles every Swift source, including the controller settings and editor.
+      - name: Build the launcher UI target
+        working-directory: HostApp
+        run: |
+          xcodebuild \
+            -project pziOS.xcodeproj \
+            -scheme ZomUIPreview \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

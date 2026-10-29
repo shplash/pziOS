@@ -174,6 +174,8 @@ static joystickfun g_joyCb;
 static void pads_init(void);
 static BOOL pad_any_connected(void);
 static BOOL kbm_connected(void);
+static int pad_overlay_hides(void);
+static void pad_config_load(void);
 static Ev g_ev[4096];
 static int g_evHead, g_evTail;
 
@@ -211,7 +213,36 @@ static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a = 
 static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x, .y = y}; push_event(e); }
 
 // ---- on-screen controls -------------------------------------------------------------------------------
-// kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay
+// kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay, 4 = toggle pointer mode,
+//       5 = virtual gamepad button, 6 = virtual gamepad trigger
+
+// ---- virtual gamepad ----------------------------------------------------------------------------------
+// With the launcher's Virtual Gamepad setting on, the on-screen controls drive a synthetic controller in the last joystick slot,
+// so the game sees a pad instead of keyboard and mouse. It is deliberately not part of g_pads: a real controller in the same
+// slot would be shadowed, and the overlay must not treat the pad it is drawing as an external controller.
+#define VPAD_SLOT 0                            // joystick slot 0 while the virtual pad is on: games that only look at the first pad find it
+static int g_vpadOn = -1;
+static unsigned char g_vpadButtons[15];
+static float g_vpadAxes[6];                    // LX, LY, RX, RY, LT, RT (triggers rest at -1, as in GLFW)
+static void vpad_init(void) {
+    if (g_vpadOn >= 0) return;
+    g_vpadOn = [NSUserDefaults.standardUserDefaults boolForKey:@"zom.virtualPad"];
+    for (int i = 0; i < 6; i++) g_vpadAxes[i] = i >= 4 ? -1.0f : 0.0f;
+    if (g_vpadOn) glfwi_log("virtual gamepad: the on-screen controls drive joystick slot %d", VPAD_SLOT);
+}
+static int vpad_active(void) { vpad_init(); return g_vpadOn; }
+static void vpad_set_button(int i, BOOL down) { if (i >= 0 && i < 15) g_vpadButtons[i] = down ? 1 : 0; }
+static void vpad_set_trigger(int i, BOOL down) { if (i >= 0 && i < 2) g_vpadAxes[4 + i] = down ? 1.0f : -1.0f; }
+static void vpad_set_stick(int stick, float x, float y) {
+    int i = stick == 1 ? 2 : 0;
+    float dz = 0.15f;
+    float m = hypotf(x, y);
+    if (m <= dz) { g_vpadAxes[i] = 0; g_vpadAxes[i + 1] = 0; return; }
+    float k = (m - dz) / (1.0f - dz) / m;
+    g_vpadAxes[i] = MAX(-1.0f, MIN(1.0f, x * k));
+    g_vpadAxes[i + 1] = MAX(-1.0f, MIN(1.0f, y * k));
+}
+
 @interface ZOButton : UIView
 @property (nonatomic) int kind, code;
 @property (nonatomic, strong) UILabel *label;
@@ -266,6 +297,8 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
     GLFWiOSView *gv = (GLFWiOSView *)self.superview;
     if (self.kind == 0) push_key(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
     else if (self.kind == 1) push_mouse(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
+    else if (self.kind == 5) { if (d) g_vpadButtons[self.code & 15] = 1; else g_vpadButtons[self.code & 15] = 0; }
+    else if (self.kind == 6) vpad_set_trigger(self.code, d);
     else if (d && self.kind == 2) [gv toggleKeyboard];
     else if (d && self.kind == 3) [gv toggleControls];
     else if (d && self.kind == 4) [gv toggleMode];
@@ -316,16 +349,58 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self reset]; }
 @end
 
+// Virtual gamepad stick: writes the pad's left or right axes instead of key presses.
+@interface ZOVPadStick : UIView
+@property (nonatomic) int stick;                   // 0 left, 1 right
+@property (nonatomic, strong) CAShapeLayer *thumb;
+@property (nonatomic) CGPoint norm;
+@end
+@implementation ZOVPadStick
+- (instancetype)initWithFrame:(CGRect)f {
+    if ((self = [super initWithFrame:f])) {
+        self.multipleTouchEnabled = YES;
+        self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.35];
+        self.layer.cornerRadius = f.size.width / 2; self.layer.borderWidth = 2; self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.5].CGColor;
+        CGFloat t = f.size.width * 0.38;
+        self.thumb = [CAShapeLayer layer];
+        self.thumb.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-t / 2, -t / 2, t, t)].CGPath;
+        self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
+        self.thumb.position = CGPointMake(f.size.width / 2, f.size.height / 2);
+        [self.layer addSublayer:self.thumb];
+    }
+    return self;
+}
+- (void)update:(UITouch *)t {
+    CGFloat r = self.bounds.size.width / 2; CGPoint c = CGPointMake(r, r), p = [t locationInView:self];
+    CGFloat dx = p.x - c.x, dy = p.y - c.y, len = hypot(dx, dy);
+    if (len > r) { dx *= r / len; dy *= r / len; }
+    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(c.x + dx, c.y + dy); [CATransaction commit];
+    vpad_set_stick(self.stick, (float)(dx / r), (float)(dy / r));
+}
+- (void)reset {
+    vpad_set_stick(self.stick, 0, 0);
+    CGFloat r = self.bounds.size.width / 2;
+    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r, r); [CATransaction commit];
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self update:ts.anyObject]; }
+- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self update:ts.anyObject]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self reset]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self reset]; }
+@end
+
 // Aiming stick: while it is pushed past a small dead zone it holds the right mouse button (the game's aim stance) and puts the cursor around the
 // player, in the pushed direction, so the character turns and aims that way. Pair it with ATK for firing. Letting go releases the aim.
 @interface ZOAimStick : UIView
 @property (nonatomic, strong) CAShapeLayer *thumb;
 @property (nonatomic) CGPoint norm;
 @property (nonatomic) BOOL aiming;
+@property (nonatomic) BOOL attacking;      // auto mode is holding the fire button
+@property (nonatomic) int attackMode;      // zom.aimAttackMode: 0 off, 1 one attack on release, 2 auto-attack while pushed
 @end
 @implementation ZOAimStick
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
+        self.attackMode = (int)[NSUserDefaults.standardUserDefaults integerForKey:@"zom.aimAttackMode"];
         self.multipleTouchEnabled = YES;
         self.backgroundColor = [UIColor colorWithRed:0.35 green:0.08 blue:0.06 alpha:0.30];
         self.layer.cornerRadius = f.size.width / 2; self.layer.borderWidth = 2; self.layer.borderColor = [UIColor colorWithRed:1 green:0.55 blue:0.5 alpha:0.55].CGColor;
@@ -345,14 +420,24 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r + dx, r + dy); [CATransaction commit];
     GLFWiOSView *gv = (GLFWiOSView *)self.superview;
     if (len > r * 0.25) {
-        if (!self.aiming) { self.aiming = YES; push_mouse(1, GLFW_PRESS); }
+        if (!self.aiming) {
+            self.aiming = YES; push_mouse(1, GLFW_PRESS);
+            if (self.attackMode == 2) { self.attacking = YES; push_mouse(0, GLFW_PRESS); }     // auto-attack while pushed
+        }
         CGFloat reach = MIN(gv.bounds.size.width, gv.bounds.size.height) * 0.42;       // how far from the player the cursor goes at full push
         CGPoint c = CGPointMake(gv.bounds.size.width / 2, gv.bounds.size.height / 2);   // the game keeps the player at the centre of the screen
         [gv moveCursorTo:CGPointMake(c.x + dx / r * reach, c.y + dy / r * reach)];
-    } else if (self.aiming) { self.aiming = NO; push_mouse(1, GLFW_RELEASE); }
+    } else if (self.aiming) {
+        self.aiming = NO; push_mouse(1, GLFW_RELEASE);
+        if (self.attacking) { self.attacking = NO; push_mouse(0, GLFW_RELEASE); }
+    }
 }
 - (void)reset {
-    if (self.aiming) { self.aiming = NO; push_mouse(1, GLFW_RELEASE); }
+    if (self.aiming) {
+        self.aiming = NO; push_mouse(1, GLFW_RELEASE);
+        if (self.attacking) { self.attacking = NO; push_mouse(0, GLFW_RELEASE); }
+        else if (self.attackMode == 1) { push_mouse(0, GLFW_PRESS); push_mouse(0, GLFW_RELEASE); }   // one attack on release
+    }
     CGFloat r = self.bounds.size.width / 2;
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r, r); [CATransaction commit];
 }
@@ -436,7 +521,7 @@ static void frame_rate_hint_start(void) {
     if (!self.pointerTouch || ![ts containsObject:self.pointerTouch]) return;
     CGPoint p = [self.pointerTouch locationInView:self];
     if (hypot(p.x - self.startPt.x, p.y - self.startPt.y) > 10) self.moved = YES;
-    if (self.trackpad) { CGFloat k = 1.0; [self moveCursorTo:CGPointMake(self.cursorPt.x + (p.x - self.lastPt.x) * k, self.cursorPt.y + (p.y - self.lastPt.y) * k)]; }
+    if (self.trackpad) { CGFloat k = [self padCursorSpeed]; [self moveCursorTo:CGPointMake(self.cursorPt.x + (p.x - self.lastPt.x) * k, self.cursorPt.y + (p.y - self.lastPt.y) * k)]; }
     else [self moveCursorTo:p];
     self.lastPt = p;
 }
@@ -461,6 +546,16 @@ static void frame_rate_hint_start(void) {
     [self updateCursorVisibility];
 }
 - (void)mouseDelta:(CGPoint)d { [self moveCursorTo:CGPointMake(self.cursorPt.x + d.x, self.cursorPt.y + d.y)]; }
+/// Touch "pad" mode cursor speed: one point of cursor per point of finger at 1.0 (launcher's Sensitivity slider, zom.mouseSens).
+- (CGFloat)padCursorSpeed {
+    static CGFloat speed = -1;
+    if (speed < 0) {
+        id pref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.mouseSens"];
+        speed = pref ? [pref doubleValue] : 1.0;
+        if (!(speed >= 0.2 && speed <= 4.0)) speed = 1.0;
+    }
+    return speed;
+}
 - (void)setMouseConnected:(BOOL)on {
     self.mouseActive = on;
     [self updateCursorVisibility];      // the drawn cursor stays visible while a mouse is attached, whatever the touch mode
@@ -469,8 +564,11 @@ static void frame_rate_hint_start(void) {
 
 // ---- two-finger scroll (mouse wheel)
 - (void)scrolled:(UIPanGestureRecognizer *)g {
-    CGPoint v = [g translationInView:self]; [g setTranslation:CGPointZero inView:self];
-    Ev e = {.type = EV_SCROLL, .x = 0, .y = -v.y / 12.0}; push_event(e);
+    static int twoFingerOn = -1;
+    if (twoFingerOn < 0) { id pref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.twoFingerZoom"]; twoFingerOn = pref ? [pref boolValue] : 1; }
+    CGPoint d = [g translationInView:self]; [g setTranslation:CGPointZero inView:self];
+    if (!twoFingerOn) return;                       // the Two-Finger Zoom setting is off: empty-screen drags do nothing
+    Ev e = {.type = EV_SCROLL, .x = 0, .y = -d.y / 12.0}; push_event(e);
 }
 
 // ---- soft keyboard: a separate hidden UIKeyInput view takes focus only while KB is on, so the game view (which stays first responder
@@ -493,7 +591,8 @@ static void frame_rate_hint_start(void) {
 }
 - (void)updateControlVisibility {
     [self updateCursorVisibility];
-    BOOL away = self.padConnected || kbm_connected();       // a controller, or a physical keyboard together with a mouse
+    // a controller, or a physical keyboard together with a mouse; the controller only hides the controls when the player left it that way
+    BOOL away = (self.padConnected && pad_overlay_hides()) || kbm_connected();
     for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
     self.hideButton.hidden = away; self.modeButton.hidden = away;
 }
@@ -518,7 +617,10 @@ static void frame_rate_hint_start(void) {
 // ---- layout of the overlay
 // Builds the controls from the layout saved by the launcher's touch editor (UserDefaults "zom.touchLayout", JSON). NO = none saved.
 - (BOOL)installSavedLayout {
-    NSString *json = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"];
+    // Virtual gamepad on: the gamepad layout drives the synthetic pad; keyboard/mouse layouts stay untouched for when it is off.
+    BOOL padMode = vpad_active();
+    NSString *json = [NSUserDefaults.standardUserDefaults stringForKey:(padMode ? @"zom.padLayout" : @"zom.touchLayout")];
+    if (!json.length && padMode) json = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"];
     NSDictionary *lay = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
     NSArray *items = [lay isKindOfClass:NSDictionary.class] ? lay[@"items"] : nil;
     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
@@ -540,6 +642,17 @@ static void frame_rate_hint_start(void) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
             [self addSubview:j]; [self.controls addObject:j]; continue;
         }
+        if ([kind isEqualToString:@"padstick"]) {
+            ZOVPadStick *s = [[ZOVPadStick alloc] initWithFrame:CGRectMake(0, 0, size, size)];
+            s.tag = tag++; s.norm = norm; s.alpha = alpha; s.stick = code == 1 ? 1 : 0;
+            [self addSubview:s]; [self.controls addObject:s]; continue;
+        }
+        if ([kind isEqualToString:@"padbtn"] || [kind isEqualToString:@"padtrig"]) {
+            BOOL trig = [kind isEqualToString:@"padtrig"];
+            ZOButton *pb = [ZOButton buttonWithTitle:label kind:(trig ? 6 : 5) code:code size:size];
+            pb.norm = norm; pb.alpha = alpha; pb.tag = tag++;
+            [self addSubview:pb]; [self.controls addObject:pb]; continue;
+        }
         int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : -1;
         if (k < 0) continue;
         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
@@ -557,7 +670,7 @@ static void frame_rate_hint_start(void) {
 // button must not count, or holding the stick with one thumb and a button with the other reads as a zoom gesture.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     for (UIView *v = touch.view; v && v != self; v = v.superview)
-        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class]) return NO;
+        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOVPadStick.class]) return NO;
     return YES;
 }
 - (void)installControls {
@@ -600,7 +713,7 @@ static void frame_rate_hint_start(void) {
     CGFloat L = MAX(in.left, 20), R = MAX(in.right, 20), B = MAX(in.bottom, 14), T = MAX(in.top, 10);
     for (UIView *v in self.subviews) {
         CGPoint np = CGPointZero;
-        if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm;
+        if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm; else if ([v isKindOfClass:ZOVPadStick.class]) np = ((ZOVPadStick *)v).norm;
         if (np.x != 0 || np.y != 0) {      // saved layout
             CGFloat hw = v.bounds.size.width / 2;
             v.center = CGPointMake(MIN(MAX(np.x * W, hw), W - hw), MIN(MAX(np.y * H, hw), H - hw));
@@ -1014,7 +1127,11 @@ static BOOL pad_any_connected(void) {
 static void pad_connected(GCController *c) {
     pthread_mutex_lock(&g_padMutex);
     int slot = pad_slot_of(c);
-    if (slot < 0) { for (NSUInteger i = 0; i <= GLFW_JOYSTICK_LAST; i++) if (g_pads[i] == (id)NSNull.null) { g_pads[i] = c; slot = (int)i; break; } }
+    if (slot < 0) {
+        NSUInteger first = vpad_active() ? 1 : 0;              // slot 0 is the virtual gamepad while it is on
+        for (NSUInteger i = first; i <= GLFW_JOYSTICK_LAST; i++)
+            if (g_pads[i] == (id)NSNull.null) { g_pads[i] = c; slot = (int)i; break; }
+    }
     pthread_mutex_unlock(&g_padMutex);
     if (slot < 0) return;
     touchpad_bind(c);
@@ -1033,6 +1150,8 @@ static void pad_disconnected(GCController *c) {
 }
 static void pads_init(void) {
     if (g_padsReady) return; g_padsReady = 1;
+    pad_config_load();          // read the launcher's mapping on the main thread, before the render thread reads pad state
+    vpad_init();
     g_pads = [NSMutableArray array]; for (int i = 0; i <= GLFW_JOYSTICK_LAST; i++) [g_pads addObject:NSNull.null];
     for (GCController *c in GCController.controllers) pad_connected(c);
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1046,44 +1165,105 @@ static GCController *pad_for(int jid) {
     pthread_mutex_lock(&g_padMutex); id c = g_pads[jid]; pthread_mutex_unlock(&g_padMutex);
     return c == (id)NSNull.null ? nil : c;
 }
+// ---------------------------------------------------------------- controller configuration ---
+
+// The launcher's Settings > Controls > Controller screen (HostApp/Sources/ControllerSettings.swift) hands its choices over at
+// launch as JSON in ZOMIOS_PAD_CONFIG, the same way the other settings travel:
+//   {"overlay":true,"deadzone":0.15,"buttons":[15 physical indices],"axes":[6 physical indices]}
+// Physical button indices use GLFW's order (0 A ... 14 d-pad left) plus 15 and 16 for the two triggers, so a face button can
+// be told to act as LT or RT. Physical axis indices are GLFW's (0 LX, 1 LY, 2 RX, 3 RY, 4 LT, 5 RT). Anything missing or out
+// of range falls back to the standard mapping, and no variable at all means stock behaviour.
+typedef struct { int overlay; float deadzone; int buttons[15]; int axes[6]; } ZOPadConfig;
+static ZOPadConfig g_padCfg = { 1, 0.0f,
+    { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 },
+    { 0, 1, 2, 3, 4, 5 } };
+static int g_padCfgLoaded;
+
+static void pad_config_load(void) {
+    if (g_padCfgLoaded) return;
+    g_padCfgLoaded = 1;
+    const char *json = getenv("ZOMIOS_PAD_CONFIG");
+    if (!json || !*json) return;
+    NSData *d = [NSData dataWithBytes:json length:strlen(json)];
+    NSDictionary *o = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+    if (![o isKindOfClass:NSDictionary.class]) { glfwi_log("controller: ignoring an unreadable ZOMIOS_PAD_CONFIG"); return; }
+    if ([o[@"overlay"] isKindOfClass:NSNumber.class]) g_padCfg.overlay = [o[@"overlay"] boolValue] ? 1 : 0;
+    if ([o[@"deadzone"] isKindOfClass:NSNumber.class]) g_padCfg.deadzone = MAX(0.0f, MIN(0.95f, [o[@"deadzone"] floatValue]));
+    NSArray *b = o[@"buttons"], *a = o[@"axes"];
+    if ([b isKindOfClass:NSArray.class]) for (NSUInteger i = 0; i < 15 && i < b.count; i++) { int v = [b[i] intValue]; if (v >= 0 && v <= 16) g_padCfg.buttons[i] = v; }
+    if ([a isKindOfClass:NSArray.class]) for (NSUInteger i = 0; i < 6 && i < a.count; i++) { int v = [a[i] intValue]; if (v >= 0 && v <= 5) g_padCfg.axes[i] = v; }
+    glfwi_log("controller: remap loaded (deadzone %.2f, on-screen controls %s while a pad is connected)",
+              g_padCfg.deadzone, g_padCfg.overlay ? "hidden" : "kept");
+}
+
+// Whether the on-screen controls should disappear while a controller is connected. On unless the player turned it off, which
+// suits holding the controller in one hand and using the touch buttons with the other.
+static int pad_overlay_hides(void) { pad_config_load(); return g_padCfg.overlay; }
+
+// Radial deadzone with a rescale, so a stick still leaves 0 smoothly and reaches full deflection at the edge instead of jumping
+// from nothing to the deadzone value.
+static void pad_deadzone(float *x, float *y, float dz) {
+    if (dz <= 0) return;
+    float m = hypotf(*x, *y);
+    if (m <= dz) { *x = 0; *y = 0; return; }
+    float k = (m - dz) / (1.0f - dz) / m;
+    *x *= k; *y *= k;
+}
+
 static void pad_read(GCController *c, unsigned char buttons[15], float axes[6]) {
     memset(buttons, 0, 15); for (int i = 0; i < 6; i++) axes[i] = 0;
     axes[4] = axes[5] = -1.0f;                                                    // triggers rest at -1 in GLFW
     GCExtendedGamepad *g = c.extendedGamepad; if (!g) return;
-    buttons[0] = g.buttonA.pressed; buttons[1] = g.buttonB.pressed; buttons[2] = g.buttonX.pressed; buttons[3] = g.buttonY.pressed;
-    buttons[4] = g.leftShoulder.pressed; buttons[5] = g.rightShoulder.pressed;
-    buttons[6] = g.buttonOptions ? g.buttonOptions.pressed : 0;                   // BACK
-    buttons[7] = g.buttonMenu.pressed;                                            // START
-    buttons[8] = g.buttonHome ? g.buttonHome.pressed : 0;                         // GUIDE
-    buttons[9] = g.leftThumbstickButton ? g.leftThumbstickButton.pressed : 0; buttons[10] = g.rightThumbstickButton ? g.rightThumbstickButton.pressed : 0;
-    buttons[11] = g.dpad.up.pressed; buttons[12] = g.dpad.right.pressed; buttons[13] = g.dpad.down.pressed; buttons[14] = g.dpad.left.pressed;
-    axes[0] = g.leftThumbstick.xAxis.value; axes[1] = -g.leftThumbstick.yAxis.value;   // GLFW: +Y is down
-    axes[2] = g.rightThumbstick.xAxis.value; axes[3] = -g.rightThumbstick.yAxis.value;
-    axes[4] = g.leftTrigger.value * 2.0f - 1.0f; axes[5] = g.rightTrigger.value * 2.0f - 1.0f;
+    pad_config_load();
+    unsigned char phys[17]; float pax[6];
+    phys[0] = g.buttonA.pressed; phys[1] = g.buttonB.pressed; phys[2] = g.buttonX.pressed; phys[3] = g.buttonY.pressed;
+    phys[4] = g.leftShoulder.pressed; phys[5] = g.rightShoulder.pressed;
+    phys[6] = g.buttonOptions ? g.buttonOptions.pressed : 0;                      // BACK
+    phys[7] = g.buttonMenu.pressed;                                               // START
+    phys[8] = g.buttonHome ? g.buttonHome.pressed : 0;                            // GUIDE
+    phys[9] = g.leftThumbstickButton ? g.leftThumbstickButton.pressed : 0; phys[10] = g.rightThumbstickButton ? g.rightThumbstickButton.pressed : 0;
+    phys[11] = g.dpad.up.pressed; phys[12] = g.dpad.right.pressed; phys[13] = g.dpad.down.pressed; phys[14] = g.dpad.left.pressed;
+    phys[15] = g.leftTrigger.value > 0.5f; phys[16] = g.rightTrigger.value > 0.5f;  // the triggers as buttons
+    pax[0] = g.leftThumbstick.xAxis.value; pax[1] = -g.leftThumbstick.yAxis.value;   // GLFW: +Y is down
+    pax[2] = g.rightThumbstick.xAxis.value; pax[3] = -g.rightThumbstick.yAxis.value;
+    pad_deadzone(&pax[0], &pax[1], g_padCfg.deadzone);
+    pad_deadzone(&pax[2], &pax[3], g_padCfg.deadzone);
+    pax[4] = g.leftTrigger.value * 2.0f - 1.0f; pax[5] = g.rightTrigger.value * 2.0f - 1.0f;
+    for (int i = 0; i < 15; i++) buttons[i] = phys[g_padCfg.buttons[i]];
+    for (int i = 0; i < 6; i++) axes[i] = MAX(-1.0f, MIN(1.0f, pax[g_padCfg.axes[i]]));
 }
 static unsigned char g_padButtons[GLFW_JOYSTICK_LAST + 1][15]; static float g_padAxes[GLFW_JOYSTICK_LAST + 1][6]; static unsigned char g_padHat[GLFW_JOYSTICK_LAST + 1][1];
 static char g_padGuid[GLFW_JOYSTICK_LAST + 1][33]; static char g_padName[GLFW_JOYSTICK_LAST + 1][128];
 
-GLFW_API int glfwJoystickPresent(int j) { return pad_for(j) != nil; }
+GLFW_API int glfwJoystickPresent(int j) { if (j == VPAD_SLOT) return vpad_active(); return pad_for(j) != nil; }
 GLFW_API const float *glfwGetJoystickAxes(int j, int *c) {
+    if (j == VPAD_SLOT) { if (c) *c = vpad_active() ? 6 : 0; return vpad_active() ? g_vpadAxes : NULL; }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     unsigned char b[15]; pad_read(p, b, g_padAxes[j]); if (c) *c = 6; return g_padAxes[j];
 }
 GLFW_API const unsigned char *glfwGetJoystickButtons(int j, int *c) {
+    if (j == VPAD_SLOT) { if (c) *c = vpad_active() ? 15 : 0; return vpad_active() ? g_vpadButtons : NULL; }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     float a[6]; pad_read(p, g_padButtons[j], a); if (c) *c = 15; return g_padButtons[j];
 }
 GLFW_API const unsigned char *glfwGetJoystickHats(int j, int *c) {
+    if (j == VPAD_SLOT) {
+        static unsigned char hat[1];
+        hat[0] = (unsigned char)((g_vpadButtons[11] ? 1 : 0) | (g_vpadButtons[12] ? 2 : 0) | (g_vpadButtons[13] ? 4 : 0) | (g_vpadButtons[14] ? 8 : 0));
+        if (c) *c = vpad_active() ? 1 : 0; return vpad_active() ? hat : NULL;
+    }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     unsigned char b[15]; float a[6]; pad_read(p, b, a);
     g_padHat[j][0] = (b[11] ? 1 : 0) | (b[12] ? 2 : 0) | (b[13] ? 4 : 0) | (b[14] ? 8 : 0);   // UP RIGHT DOWN LEFT
     if (c) *c = 1; return g_padHat[j];
 }
 GLFW_API const char *glfwGetJoystickName(int j) {
+    if (j == VPAD_SLOT) return vpad_active() ? "pziOS Virtual Gamepad" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     strlcpy(g_padName[j], (p.vendorName ?: @"Game Controller").UTF8String, sizeof g_padName[j]); return g_padName[j];
 }
 GLFW_API const char *glfwGetJoystickGUID(int j) {
+    if (j == VPAD_SLOT) return vpad_active() ? "0300005e000000000000000000000000" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     NSUInteger h = [(p.vendorName ?: @"Game Controller") hash];
     snprintf(g_padGuid[j], sizeof g_padGuid[j], "030000%02x%08lx0000%04x0000000000", 0x5e, (unsigned long)h & 0xffffffffUL, (unsigned)(j & 0xffff));
@@ -1091,16 +1271,22 @@ GLFW_API const char *glfwGetJoystickGUID(int j) {
 }
 GLFW_API void glfwSetJoystickUserPointer(int j, void *p) {}
 GLFW_API void *glfwGetJoystickUserPointer(int j) { return NULL; }
-GLFW_API int glfwJoystickIsGamepad(int j) { GCController *p = pad_for(j); return p && p.extendedGamepad != nil; }
+GLFW_API int glfwJoystickIsGamepad(int j) { if (j == VPAD_SLOT) return vpad_active(); GCController *p = pad_for(j); return p && p.extendedGamepad != nil; }
 GLFW_API int glfwUpdateGamepadMappings(const char *s) { return 1; }
 GLFW_API const char *glfwGetGamepadName(int j) { return glfwJoystickIsGamepad(j) ? glfwGetJoystickName(j) : NULL; }
 GLFW_API int glfwGetGamepadState(int j, GLFWgamepadstate *st) {
+    if (j == VPAD_SLOT) {
+        if (!vpad_active()) return 0;
+        memcpy(st->buttons, g_vpadButtons, 15);
+        memcpy(st->axes, g_vpadAxes, sizeof g_vpadAxes);
+        return 1;
+    }
     GCController *p = pad_for(j); if (!p || !p.extendedGamepad) return 0;
     pad_read(p, st->buttons, st->axes);
     if (input_log_enabled()) { static int n; static unsigned char last[15]; if (memcmp(last, st->buttons, 15) != 0 && n++ < 40) { memcpy(last, st->buttons, 15); glfwi_log("gamepad %d buttons changed: A%d B%d X%d Y%d LB%d RB%d start%d | LX=%.2f LY=%.2f", j, st->buttons[0], st->buttons[1], st->buttons[2], st->buttons[3], st->buttons[4], st->buttons[5], st->buttons[7], st->axes[0], st->axes[1]); } }
     return 1;
 }
-GLFW_API joystickfun glfwSetJoystickCallback(joystickfun cb) { pads_init(); joystickfun o = g_joyCb; g_joyCb = cb; return o; }
+GLFW_API joystickfun glfwSetJoystickCallback(joystickfun cb) { pads_init(); joystickfun o = g_joyCb; g_joyCb = cb; if (cb && vpad_active()) { Ev e = {.type = EV_JOY, .a = VPAD_SLOT, .b = 0x00040001 /* GLFW_CONNECTED */}; push_event(e); } return o; }
 
 // ---------------------------------------------------------------- time ---
 GLFW_API double glfwGetTime(void) { return (double)(mach_absolute_time() - g_t0) * g_tb.numer / g_tb.denom / 1e9; }
@@ -1143,7 +1329,12 @@ GLFW_API void glfwMakeContextCurrent(GLFWwindow *w) {
     }
     if (!ok) { glfwi_log("eglMakeCurrent GAVE UP on %s: 0x%x", me, err); return; }
     g_owner = pthread_self(); g_hasOwner = 1;
-    glfwi_log("context made current on %s", me);
+    // Log the hand-over only when it moves to another thread (plus the first few). Some builds renew the context on every frame, and an
+    // unbuffered stderr line per frame is a write() syscall and a log append per frame for nothing.
+    {
+        static int made; static pthread_t lastOwner;
+        if (made < 4 || !pthread_equal(lastOwner, g_owner)) { made++; lastOwner = g_owner; glfwi_log("context made current on %s", me); }
+    }
     g_current = w;
     prime_gl4es();
 }

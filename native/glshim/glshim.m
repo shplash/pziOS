@@ -320,15 +320,28 @@ static NSMutableDictionary<NSNumber *, NSString *> *g_shaderSource;             
 static NSMutableSet<NSNumber *> *g_libraryShaders;                                      // shaders without main(): merged at link time
 static NSMutableSet<NSNumber *> *g_deferredShaders;                                     // mains that call library functions: compiled at link time
 static NSMutableSet<NSNumber *> *g_skinnedPrograms;
-static NSMutableSet<NSString *> *g_driverLocs;   // "program:location" pairs obtained from the driver because gl4es returned -1
+// Pairs of (program, location) that only the driver knows. There are a handful of them, so a plain scan is much cheaper than
+// building an NSString for a set lookup on every bone-palette upload (which happens once per character, per frame).
+static struct { GLuint program; GLint loc; } g_driverLocTab[64];
+static int g_driverLocN;
 static GLuint g_apiProgram;                       // program most recently bound through the API layer
 static GLuint g_esProg;                           // program most recently bound at the ES layer
 static float *g_palData; static int g_palCount; static unsigned g_palVersion;   // latest bone palette uploaded by the game (column-major)
-static NSMutableDictionary<NSNumber *, NSNumber *> *g_palApplied;                // ES program -> palette version already uploaded to it
 static NSLock *g_lock;
 static void ensure_state(void) { static dispatch_once_t once; dispatch_once(&once, ^{
     g_shaderDefaults = [NSMutableDictionary dictionary]; g_programShaders = [NSMutableDictionary dictionary];
-    g_shaderType = [NSMutableDictionary dictionary]; g_shaderSource = [NSMutableDictionary dictionary]; g_libraryShaders = [NSMutableSet set]; g_deferredShaders = [NSMutableSet set]; g_skinnedPrograms = [NSMutableSet set]; g_driverLocs = [NSMutableSet set]; g_lock = [NSLock new]; }); }
+    g_shaderType = [NSMutableDictionary dictionary]; g_shaderSource = [NSMutableDictionary dictionary]; g_libraryShaders = [NSMutableSet set]; g_deferredShaders = [NSMutableSet set]; g_skinnedPrograms = [NSMutableSet set]; g_lock = [NSLock new]; }); }
+static BOOL driver_loc_known(GLuint program, GLint loc) {
+    for (int i = 0; i < g_driverLocN; i++) if (g_driverLocTab[i].program == program && g_driverLocTab[i].loc == loc) return YES;
+    return NO;
+}
+static void driver_loc_add(GLuint program, GLint loc) {
+    if (g_driverLocN >= (int)(sizeof g_driverLocTab / sizeof g_driverLocTab[0])) return;
+    if (driver_loc_known(program, loc)) return;
+    g_driverLocTab[g_driverLocN].program = program;
+    g_driverLocTab[g_driverLocN].loc = loc;
+    g_driverLocN++;
+}
 static BOOL is_library(GLuint sh) { ensure_state(); [g_lock lock]; BOOL r = [g_libraryShaders containsObject:@(sh)]; [g_lock unlock]; return r; }
 static BOOL is_deferred(GLuint sh) { ensure_state(); [g_lock lock]; BOOL r = [g_deferredShaders containsObject:@(sh)]; [g_lock unlock]; return r; }
 
@@ -499,20 +512,26 @@ static void shim_glUniformMatrix4fv(GLint loc, GLsizei count, unsigned char tran
     static int big;
     ensure_state();
     BOOL direct = NO;
-    if (count > 1 && loc >= 0) { [g_lock lock]; direct = [g_driverLocs containsObject:[NSString stringWithFormat:@"%u:%d", g_apiProgram, loc]]; [g_lock unlock]; }
+    if (count > 1 && loc >= 0) { [g_lock lock]; direct = driver_loc_known(g_apiProgram, loc); [g_lock unlock]; }
     if (direct) {
         // gl4es' GoUniformMatrix4fv copies into a small stack buffer when transposing (overflow for a 35-bone palette) and does not know
         // this uniform at all, so it never replays it into the program variant it really draws with. Cache the palette (column-major) here;
-        // it is uploaded to whichever ES program is bound right before each draw (apply_palette).
-        float *t = malloc((size_t)count * 16 * sizeof(float));
-        if (t) {
+        // it is uploaded to whichever ES program is bound right before each draw (apply_palette). The buffer is reused: this runs once per
+        // character per frame, and a malloc/free pair there is pure overhead.
+        static float *palBuf; static size_t palCap;
+        size_t need = (size_t)count * 16;
+        [g_lock lock];
+        if (need > palCap) { float *t = realloc(palBuf, need * sizeof(float)); if (t) { palBuf = t; palCap = need; } }
+        float *t = palBuf;
+        if (t && need <= palCap) {
             for (GLsizei m = 0; m < count; m++) for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++)
                 t[m * 16 + c * 4 + r] = transpose ? v[m * 16 + r * 4 + c] : v[m * 16 + c * 4 + r];
-            [g_lock lock]; float *old = g_palData; g_palData = t; g_palCount = count; g_palVersion++; [g_lock unlock];
-            free(old);
+            g_palData = t; g_palCount = count; g_palVersion++;
+            [g_lock unlock];
             if (shader_log_enabled() && big < 4) { big++; double sum = 0; for (int i = 0; i < count * 16; i++) sum += fabs(t[i]); fprintf(stderr, "[glshim] palette cached (api prog=%u loc=%d count=%d transpose=%d) sum|v|=%.2f version=%u\n", g_apiProgram, loc, count, transpose, sum, g_palVersion); }
             return;
         }
+        [g_lock unlock];
     }
     if (shader_log_enabled() && count >= 8 && big < 10) { big++; double sum = 0; for (int i = 0; i < count * 16 && i < 16 * 64; i++) sum += fabs(v[i]); fprintf(stderr, "[glshim] API glUniformMatrix4fv (via gl4es) loc=%d count=%d transpose=%d sum|v|=%.2f\n", loc, count, transpose, sum); }
     glUniformMatrix4fv(loc, count, transpose, v);
@@ -539,7 +558,7 @@ static GLint shim_glGetUniformLocation(GLuint program, const GLchar *name) {
         if (esLoc) {
             GLint e = esLoc(program, name);
             if (e < 0 && !strchr(name, '[')) { char buf[256]; snprintf(buf, sizeof buf, "%s[0]", name); e = esLoc(program, buf); }
-            if (e >= 0) { ensure_state(); [g_lock lock]; [g_driverLocs addObject:[NSString stringWithFormat:@"%u:%d", program, e]]; [g_lock unlock]; if (shader_log_enabled()) fprintf(stderr, "[glshim] glGetUniformLocation(program %u, \"%s\") gl4es=-1, driver=%d -> using driver location\n", program, name, e); return e; }
+            if (e >= 0) { [g_lock lock]; driver_loc_add(program, e); [g_lock unlock]; if (shader_log_enabled()) fprintf(stderr, "[glshim] glGetUniformLocation(program %u, \"%s\") gl4es=-1, driver=%d -> using driver location\n", program, name, e); return e; }
         }
     }
     if (shader_log_enabled() && name && strstr(name, "Palette")) fprintf(stderr, "[glshim] glGetUniformLocation(program %u, \"%s\") = %d%s\n", program, name, r, retried ? " (found as name[0])" : "");
@@ -641,11 +660,38 @@ typedef void (*GetBooleanvFn)(unsigned, unsigned char *);
 static int g_traceBudget = 12, g_matrixBudget = 6;
 #define ESFN(type, name) static type name; if (!name) name = (type)angle_proc(#name)
 
-static NSMutableDictionary<NSNumber *, NSNumber *> *g_esSkinned;   // ES program id -> has a MatrixPalette uniform (gl4es' program ids differ from the driver's)
-static BOOL es_prog_is_skinned(void) {
-    ensure_state(); [g_lock lock]; BOOL sk = [g_esSkinned[@(g_esProg)] boolValue]; [g_lock unlock]; return sk;
-}
+// Per-program state in plain C tables: these are read on every program switch and on every draw. Asking an NSDictionary there
+// meant an NSNumber allocation plus hashing per call, which is steady work on a busy frame.
+static unsigned char *g_esSkinnedTab;          // 0 unknown, 1 not skinned, 2 skinned (gl4es' program ids differ from the driver's)
+static size_t g_esSkinnedTabN;
+static unsigned *g_palAppliedTab;              // palette version already uploaded to that program
+static size_t g_palAppliedTabN;
 
+static unsigned char es_skinned_state(GLuint p) { return p < g_esSkinnedTabN ? g_esSkinnedTab[p] : 0; }
+static void es_set_skinned_state(GLuint p, unsigned char v) {
+    if (p >= g_esSkinnedTabN) {
+        size_t n = g_esSkinnedTabN ? g_esSkinnedTabN : 256;
+        while (n <= p) n *= 2;
+        unsigned char *t = realloc(g_esSkinnedTab, n);
+        if (!t) return;
+        memset(t + g_esSkinnedTabN, 0, n - g_esSkinnedTabN);
+        g_esSkinnedTab = t; g_esSkinnedTabN = n;
+    }
+    g_esSkinnedTab[p] = v;
+}
+static unsigned pal_applied(GLuint p) { return p < g_palAppliedTabN ? g_palAppliedTab[p] : 0; }
+static void set_pal_applied(GLuint p, unsigned v) {
+    if (p >= g_palAppliedTabN) {
+        size_t n = g_palAppliedTabN ? g_palAppliedTabN : 256;
+        while (n <= p) n *= 2;
+        unsigned *t = realloc(g_palAppliedTab, n * sizeof(unsigned));
+        if (!t) return;
+        memset(t + g_palAppliedTabN, 0, (n - g_palAppliedTabN) * sizeof(unsigned));
+        g_palAppliedTab = t; g_palAppliedTabN = n;
+    }
+    g_palAppliedTab[p] = v;
+}
+static BOOL es_prog_is_skinned(void) { return es_skinned_state(g_esProg) == 2; }
 // ---- ask ANGLE (KHR_debug) why it rejects a call
 static int g_dbgBudget = 40;
 static void es_debug_cb(unsigned source, unsigned type, unsigned id, unsigned severity, int length, const char *message, const void *user) {
@@ -669,12 +715,10 @@ static void es_glUseProgram(GLuint p) {
     ESFN(UseProgramFn, glUseProgram); ESFN(GetUniformLocationFn, glGetUniformLocation);
     glUseProgram(p); g_esProg = p;
     if (!p) return;
-    ensure_state(); [g_lock lock]; if (!g_esSkinned) g_esSkinned = [NSMutableDictionary dictionary]; BOOL known = g_esSkinned[@(p)] != nil; [g_lock unlock];
-    if (!known) {
-        BOOL sk = glGetUniformLocation(p, "MatrixPalette[0]") >= 0 || glGetUniformLocation(p, "MatrixPalette") >= 0;
-        [g_lock lock]; g_esSkinned[@(p)] = @(sk); [g_lock unlock];
-        if (shader_log_enabled() && sk) fprintf(stderr, "[glshim] ES program %u is skinned (has MatrixPalette)\n", p);
-    }
+    if (es_skinned_state(p)) return;                 // 1 = known not skinned, 2 = known skinned
+    BOOL sk = glGetUniformLocation(p, "MatrixPalette[0]") >= 0 || glGetUniformLocation(p, "MatrixPalette") >= 0;
+    es_set_skinned_state(p, sk ? 2 : 1);
+    if (shader_log_enabled() && sk) fprintf(stderr, "[glshim] ES program %u is skinned (has MatrixPalette)\n", p);
 }
 
 static void trace_skinned_draw(const char *kind, unsigned mode, GLsizei count, unsigned type, const void *indices) {
@@ -697,24 +741,30 @@ static void trace_skinned_draw(const char *kind, unsigned mode, GLsizei count, u
 }
 
 // Upload the cached bone palette to the ES program that is really bound (gl4es draws with its own variant of the game's program).
+// Runs before every draw, so it keeps no Objective-C objects and no per-call allocation: the copy buffer is reused and grows only
+// when the palette does.
 static void apply_palette(void) {
     if (!g_palData || !g_esProg) return;
-    ensure_state();
-    [g_lock lock];
-    if (!g_palApplied) g_palApplied = [NSMutableDictionary dictionary];
-    BOOL sk = [g_esSkinned[@(g_esProg)] boolValue]; NSNumber *ver = g_palApplied[@(g_esProg)];
-    unsigned want = g_palVersion;
-    [g_lock unlock];
-    if (!sk || (ver && ver.unsignedIntValue == want)) return;
+    if (!es_prog_is_skinned()) return;
+    static float *buf; static size_t bufCap;
     static GetUniformLocationFn esLoc; static UniformMatrix4fvFn esU;
     if (!esLoc) esLoc = (GetUniformLocationFn)angle_proc("glGetUniformLocation");
     if (!esU) esU = (UniformMatrix4fvFn)angle_proc("glUniformMatrix4fv");
+    if (!esLoc || !esU) return;
+    if (pal_applied(g_esProg) == g_palVersion) return;      // this program already has the current palette
     GLint loc = esLoc(g_esProg, "MatrixPalette"); if (loc < 0) loc = esLoc(g_esProg, "MatrixPalette[0]");
     if (loc < 0) return;
-    [g_lock lock]; int n = g_palCount; float *copy = malloc((size_t)n * 16 * sizeof(float)); if (copy) memcpy(copy, g_palData, (size_t)n * 16 * sizeof(float)); g_palApplied[@(g_esProg)] = @(want); [g_lock unlock];
-    if (!copy) return;
-    esU(loc, n, 0, copy);
-    free(copy);
+    ensure_state();
+    [g_lock lock];
+    unsigned want = g_palVersion;
+    int n = g_palCount;
+    size_t need = (size_t)n * 16;
+    if (need > bufCap) { float *t = realloc(buf, need * sizeof(float)); if (t) { buf = t; bufCap = need; } }
+    if (!buf || need > bufCap || !g_palData) { [g_lock unlock]; return; }
+    memcpy(buf, g_palData, need * sizeof(float));
+    set_pal_applied(g_esProg, want);
+    [g_lock unlock];
+    esU(loc, n, 0, buf);
     if (shader_log_enabled()) { static int logged; if (logged++ < 6) fprintf(stderr, "[glshim] applied palette v%u to ES program %u loc=%d count=%d\n", want, g_esProg, loc, n); }
 }
 
@@ -911,7 +961,7 @@ static void astc_init(void) {
     if (g_astcMin > 0) astc_cache_init();
     if (g_astcMin > 0) fprintf(stderr, "[glshim] ASTC compression enabled: min dimension %d, block %ux%u, quality %.0f\n", g_astcMin, g_astcBlock, g_astcBlock, g_astcQuality);
 }
-static BOOL astc_in_set(GLuint t) { if (!t) return NO; ensure_state(); [g_lock lock]; BOOL r = [g_astcTex containsObject:@(t)]; [g_lock unlock]; return r; }
+static BOOL astc_in_set(GLuint t) { if (!t || g_astcMin <= 0) return NO; ensure_state(); [g_lock lock]; BOOL r = [g_astcTex containsObject:@(t)]; [g_lock unlock]; return r; }
 static BOOL astc_supported(void) {
     if (g_astcSupported >= 0) return g_astcSupported;
     ESFN(GetStringFn, glGetString);

@@ -1,5 +1,6 @@
-// Launcher screen. Edit freely: in Xcode, open this file with the ZomUIPreview scheme selected and the canvas (Editor > Canvas) redraws as you type.
-// Settings use the same UserDefaults keys and defaults as the Objective-C launch code in main.m, which reads them when PLAY is pressed.
+// Launcher screen. Edit freely: in Xcode, open this file with the ZomUIPreview scheme selected and the canvas (Editor > Canvas)
+// redraws as you type. Settings use the same UserDefaults keys and defaults as the Objective-C launch code in main.m, which reads
+// them when PLAY is pressed, so everything shown here is exactly what the next launch will use.
 import SwiftUI
 @_silgen_name("zom_zink_probe") private func zomZinkProbe(_ out: UnsafeMutablePointer<CChar>, _ cap: Int) -> Int32
 import os
@@ -35,12 +36,43 @@ public final class LauncherUI: NSObject {
     }
 }
 
+// MARK: - Look and feel
+
 enum Theme {
     static let base = Color(white: 0.055)          // same value as LaunchScreen.storyboard, so launch -> home has no flash
     static let accent = Color.white
     static let surface = Color.white.opacity(0.07)
     static let dim = Color(white: 0.62)
-    static var background: some View { base.ignoresSafeArea() }
+    static let faint = Color(white: 0.42)
+    static let success = Color(red: 0.40, green: 0.86, blue: 0.58)
+    static let warning = Color(red: 1.00, green: 0.67, blue: 0.30)
+    static let danger = Color(red: 1.00, green: 0.45, blue: 0.42)
+    /// Card fill: a faint top-to-bottom gradient instead of a flat grey, so stacked panels read as separate surfaces.
+    static var card: LinearGradient {
+        LinearGradient(colors: [Color(white: 0.135), Color(white: 0.098)], startPoint: .top, endPoint: .bottom)
+    }
+    static var background: some View {
+        ZStack {
+            base
+            RadialGradient(colors: [Color.white.opacity(0.055), .clear], center: .topLeading, startRadius: 0, endRadius: 640)
+        }.ignoresSafeArea()
+    }
+}
+
+/// Short haptic on the actions that change something, matching the system feel without a generator per tap.
+enum Haptics {
+    private static let light = UIImpactFeedbackGenerator(style: .light)
+    static func tap() { light.impactOccurred() }
+}
+
+/// The press feedback used by every card and button: a small scale and dim, which reads as motion without a bounce.
+struct PressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
 }
 
 /// The default Memory Limit comes from what iOS actually lets the app use (os_proc_available_memory, about 6.1 GB on an 8 GB iPhone), not from the
@@ -142,7 +174,9 @@ public final class ZomMargins: NSObject {
     /// Margins in game pixels: left, top, right, bottom. Level 0 off, 1 small, 2 auto, 3 large, 4 custom.
     @objc public static func gamePixels(level: Int) -> [NSNumber] {
         let d = device()
-        let gameH = Double(ProcessInfo.processInfo.environment["ZOMIOS_HEIGHT"] ?? "") .flatMap { $0 >= 360 && $0 <= 2160 ? $0 : nil } ?? 720
+        // ZOMIOS_HEIGHT is set by main.m from the render resolution setting just before this runs; 720p is the fallback.
+        let fromEnv = ProcessInfo.processInfo.environment["ZOMIOS_HEIGHT"].flatMap { Double($0) }
+        let gameH = fromEnv.flatMap { $0 >= 360 && $0 <= 2160 ? $0 : nil } ?? 720
         let toPx = gameH / Double(max(d.height, 1))
         var pts: [Double]
         if level == 4, let f = customFractions() {
@@ -175,7 +209,7 @@ public final class ZomDevice: NSObject {
 
 enum PadKey { case up, down, left, right, a, b, lb, rb }
 
-/// Turns any connected gamepad into navigation events (d-pad / left stick to move, A select, B back, bumpers switch tabs).
+/// Turns any connected gamepad into navigation events (d-pad / left stick to move, A select, B back, bumpers switch pages).
 /// The first press only reveals the focus ring. Events stop while the game is starting so they never leak into it.
 final class PadNav: ObservableObject {
     @Published private(set) var tick = 0
@@ -216,22 +250,27 @@ final class PadNav: ObservableObject {
 
 // MARK: - Small building blocks
 
-/// Compact segmented control: tappable pills, one filled.
+/// Compact segmented control: tappable pills, one filled, in a sunken track.
 struct Pills: View {
     let options: [String]
     @Binding var selection: Int
     let m: Metrics
     var body: some View {
-        HStack(spacing: m.v(4)) {
+        HStack(spacing: m.v(2)) {
             ForEach(options.indices, id: \.self) { i in
-                Button { selection = i } label: {
-                    Text(options[i]).font(.system(size: m.v(13), weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
-                        .padding(.horizontal, m.v(12)).frame(height: m.v(30))
-                        .foregroundStyle(selection == i ? Color.black : .white)
-                        .background(selection == i ? Theme.accent : Color.white.opacity(0.10), in: Capsule())
+                Button {
+                    Haptics.tap()
+                    withAnimation(.easeOut(duration: 0.14)) { selection = i }
+                } label: {
+                    Text(options[i]).font(.system(size: m.v(12), weight: .semibold)).lineLimit(1).minimumScaleFactor(0.65)
+                        .padding(.horizontal, m.v(10)).frame(height: m.v(26))
+                        .foregroundStyle(selection == i ? Color.black : Color.white.opacity(0.82))
+                        .background(selection == i ? Theme.accent : Color.clear, in: Capsule())
                 }.buttonStyle(.plain)
             }
         }
+        .padding(m.v(2))
+        .background(Color.white.opacity(0.06), in: Capsule())
     }
 }
 
@@ -239,100 +278,115 @@ struct Switch: View {
     @Binding var isOn: Bool
     let m: Metrics
     var body: some View {
-        Button { isOn.toggle() } label: {
+        Button { Haptics.tap(); isOn.toggle() } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
-                Capsule().fill(isOn ? Theme.accent : Color.white.opacity(0.18)).frame(width: m.v(46), height: m.v(28))
-                Circle().fill(isOn ? Color.black : .white).frame(width: m.v(22), height: m.v(22)).padding(m.v(3))
-            }.animation(.easeOut(duration: 0.12), value: isOn)
+                Capsule().fill(isOn ? Theme.accent : Color.white.opacity(0.16)).frame(width: m.v(44), height: m.v(26))
+                Circle().fill(isOn ? Color.black : Color.white).frame(width: m.v(20), height: m.v(20)).padding(m.v(3))
+            }.animation(.easeOut(duration: 0.14), value: isOn)
         }.buttonStyle(.plain)
+    }
+}
+
+/// Small uppercase badge, used for BETA, "ready", the connected controller and so on.
+struct Chip: View {
+    let text: String
+    var tint: Color = .white
+    let m: Metrics
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: m.v(9), weight: .bold)).tracking(m.v(0.6)).lineLimit(1)
+            .padding(.horizontal, m.v(7)).frame(height: m.v(17))
+            .foregroundStyle(tint)
+            .background(tint.opacity(0.13), in: Capsule())
+            .overlay(Capsule().stroke(tint.opacity(0.22), lineWidth: 1))
     }
 }
 
 private extension View {
     /// Focus ring used by touch-free (gamepad) navigation.
     func padRing(_ on: Bool, radius: CGFloat = 10) -> some View {
-        overlay(RoundedRectangle(cornerRadius: radius).stroke(Theme.accent, lineWidth: on ? 2 : 0))
+        overlay(RoundedRectangle(cornerRadius: radius).stroke(Theme.accent, lineWidth: on ? 2 : 0).padding(-3))
     }
 }
 
-// MARK: - Home: title, PLAY, settings
+// MARK: - Home
 
 struct LauncherView: View {
     @ObservedObject var model: LauncherModel
     var onRun: (Int) -> Void
     @StateObject private var pad = PadNav()
+    @StateObject private var pads = PadMonitor()
     @State private var showSettings = false
     @State private var showSetup = false
     @State private var showGCNotice = false
-    @State private var focus = 0                       // 0 PLAY, 1 Settings, 2 Mods, 3 Game Files
+    /// 0 PLAY, 1 Settings, 2 Game Files, 3 Mods, 4 Setup guide (the tiles are a 2x2 grid under PLAY).
+    @State private var focus = 0
     /// Terminal-style spinner words, shuffled once per launch.
     @State private var words = ThinkingLine.words.shuffled()
     @AppStorage("zom.jitMethod") private var jitMethod = 0
+    @AppStorage("zom.heapLimit") private var heap = defaultHeapMode()
     @State private var build = GameBuild.loaded()
-    private var librariesDiffer: Bool { GameFiles.installed && NativeCheck.manifest != nil && !(NativeCheck.last?.differ.isEmpty ?? true) }
-    private var versionText: String {
-        let i = Bundle.main.infoDictionary ?? [:]; let v = i["CFBundleShortVersionString"] as? String ?? "", label = i["PZReleaseLabel"] as? String ?? ""
-        return "pziOS " + v + (label.isEmpty ? "" : " (\(label))") + "  ·  "
+
+    private var installed: Bool { GameFiles.installed }
+    private var librariesDiffer: Bool { installed && NativeCheck.manifest != nil && !(NativeCheck.last?.differ.isEmpty ?? true) }
+    private var jitReady: Bool { jitMethod == 0 || model.hasPairing }
+    private var ready: Bool { installed && jitReady }
+
+    private var gameValue: String {
+        guard installed else { return "Not installed" }
+        return build.map { "Build \($0)" } ?? "Installed"
     }
-    private var footer: String { versionText + (GameFiles.installed ? "" : "Game files not installed  ·  ") + (jitMethod == 1 ? "Built-in JIT" : "Manual JIT") + (build.map { "  ·  Project Zomboid \($0)" } ?? "") }
+    private var jitValue: String {
+        jitMethod == 1 ? (model.hasPairing ? "Built-in · ready" : "Built-in · no pairing") : "Manual · StikDebug"
+    }
+    private var jitTint: Color {
+        jitMethod == 1 ? (model.hasPairing ? Theme.success : Theme.warning) : Theme.dim
+    }
+    private var padValue: String {
+        guard let name = pads.name else { return "None" }
+        if let b = pads.battery { return "\(name) · \(b)%" }
+        return name
+    }
+    private var heapValue: String {
+        let i = min(max(heap, 0), 3)
+        return ["Low", "Medium", "High", "Very High"][i] + " · " + ["1.5 GB", "2 GB", "2.5 GB", "4 GB"][i]
+    }
+    private var versionText: String {
+        let i = Bundle.main.infoDictionary ?? [:]
+        let v = i["CFBundleShortVersionString"] as? String ?? ""
+        let label = i["PZReleaseLabel"] as? String ?? ""
+        return "pziOS " + v + (label.isEmpty ? "" : " (\(label))")
+    }
 
     var body: some View {
         GeometryReader { geo in
             let m = Metrics(size: geo.size)
+            let wide = geo.size.width >= 780
             ZStack {
                 Theme.background
                 VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    Text("pziOS")
-                        .font(.system(size: m.v(54), weight: .black)).padding(.top, m.v(10))
-                    Text("Project Zomboid iOS")
-                        .font(.system(size: m.v(15), weight: .medium)).tracking(1.5)
-                        .foregroundStyle(Theme.dim).padding(.top, m.v(2))
-
-                    Button { play() } label: {
-                        HStack(spacing: m.v(10)) {
-                            Image(systemName: "play.fill")
-                            Text("PLAY").tracking(3)
+                    if wide {
+                        HStack(alignment: .top, spacing: m.v(22)) {
+                            brandColumn(m).frame(maxWidth: .infinity)
+                            statusColumn(m).frame(width: min(m.v(380), geo.size.width * 0.42))
                         }
-                        .font(.system(size: m.v(22), weight: .heavy))
-                        .frame(width: m.v(260), height: m.v(56))
-                        .foregroundStyle(model.running ? Color(white: 0.55) : .black)                 // greyed out once pressed
-                        .background(model.running ? Color(white: 0.22) : Color.white, in: Capsule())
-                        .overlay(Capsule().stroke(.white, lineWidth: pad.active && focus == 0 && !model.running ? 2 : 0).padding(-5))
+                        .padding(.horizontal, m.v(26)).padding(.top, m.v(24))
+                        .frame(maxHeight: .infinity)
+                    } else {
+                        ScrollView(showsIndicators: false) {
+                            VStack(spacing: m.v(12)) { brandColumn(m); statusColumn(m) }
+                                .padding(.horizontal, m.v(20)).padding(.top, m.v(16)).padding(.bottom, m.v(8))
+                        }
+                        .frame(maxHeight: .infinity)
                     }
-                    .buttonStyle(.plain).disabled(model.running)
-                    .padding(.top, m.v(36))
-
-                    Button { showSettings = true } label: {
-                        Label("Settings", systemImage: "gearshape.fill")
-                            .font(.system(size: m.v(16), weight: .semibold))
-                            .frame(width: m.v(260), height: m.v(44))
-                            .background(Color.white.opacity(0.10), in: Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
-                            .overlay(Capsule().stroke(.white, lineWidth: pad.active && focus == 1 ? 2 : 0).padding(-5))
-                    }
-                    .buttonStyle(.plain).disabled(model.running).opacity(model.running ? 0.4 : 1)
-                    .padding(.top, m.v(12))
-
-                    HStack(spacing: m.v(12)) {
-                        folderButton("Mods", icon: "folder", index: 2, m: m) { FolderLink.open("home/Zomboid/mods") }
-                        folderButton("Game Files", icon: "folder.badge.plus", index: 3, m: m) { gameFiles() }
-                    }
-                    .frame(width: m.v(260)).padding(.top, m.v(12))
-
-                    Spacer(minLength: 0)
-                    ThinkingLine(words: words, active: model.running, m: m).padding(.bottom, m.v(4))
-                    if librariesDiffer {
-                        Text("The game's libraries differ from this app's. Open Game Files > Setup guide for what to do.").font(.system(size: m.v(11), weight: .medium)).foregroundStyle(Color.orange).padding(.bottom, m.v(4))
-                    }
-                    Text(footer).font(.system(size: m.v(11), weight: .medium)).foregroundStyle(Theme.dim.opacity(0.7)).padding(.bottom, m.v(10))
+                    bottomBar(m)
                 }
             }
         }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
         .persistentSystemOverlays(.hidden)
-        .fullScreenCover(isPresented: $showSettings) { SettingsView(model: model, pad: pad) }
+        .fullScreenCover(isPresented: $showSettings, onDismiss: { pads.refresh() }) { SettingsView(model: model, pad: pad) }
         .fullScreenCover(isPresented: $showSetup, onDismiss: { build = GameBuild.loaded() }) { SetupView(model: model, pad: pad) }
         .alert("Garbage collector switched back", isPresented: $showGCNotice) {
             Button("OK") { UserDefaults.standard.set(false, forKey: "zom.gcReverted") }
@@ -349,47 +403,219 @@ struct LauncherView: View {
             }
             TouchLayoutStore.ensureSaved()
             build = GameBuild.loaded()
+            pads.start()
             if !GameFiles.installed { showSetup = true }
-            if UserDefaults.standard.bool(forKey: "zom.gcReverted") { showGCNotice = true }
+            if d.bool(forKey: "zom.gcReverted") { showGCNotice = true }
         }
+        .onDisappear { pads.stop() }
         .onChange(of: model.running) { _, r in
             pad.enabled = !r
             if !r && UserDefaults.standard.bool(forKey: "zom.gcReverted") { showGCNotice = true }       // the JVM stopped on a ZGC trial
         }
         .onChange(of: showSettings) { _, open in if !open { focus = 1 } }
         .onChange(of: pad.tick) { _, _ in
-            guard !showSettings, !model.running else { return }
+            guard !showSettings, !showSetup, !model.running else { return }
             switch (pad.last, focus) {
-            case (.up, 1): focus = 0
-            case (.up, 2), (.up, 3): focus = 1
+            case (.up, 1), (.up, 2): focus = 0
+            case (.up, 3): focus = 1
+            case (.up, 4): focus = 2
             case (.down, 0): focus = 1
-            case (.down, 1): focus = 2
-            case (.left, 3): focus = 2
-            case (.right, 2): focus = 3
+            case (.down, 1): focus = 3
+            case (.down, 2): focus = 4
+            case (.left, 2), (.right, 1): focus = 1
+            case (.right, 2), (.left, 1): focus = 2
+            case (.right, 3), (.left, 4): focus = 3
+            case (.left, 3), (.right, 4): focus = 4
             case (.a, 0): play()
             case (.a, 1): showSettings = true
-            case (.a, 2): FolderLink.open("home/Zomboid/mods")
-            case (.a, 3): gameFiles()
+            case (.a, 2): gameFiles()
+            case (.a, 3): FolderLink.open("home/Zomboid/mods")
+            case (.a, 4): showSetup = true
             default: break
             }
         }
+    }
+
+    // MARK: columns
+
+    private func brandColumn(_ m: Metrics) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: m.v(9)) {
+                Text("pziOS").font(.system(size: m.v(44), weight: .black)).tracking(m.v(-1))
+                Chip(text: "beta", tint: Theme.warning, m: m)
+                Spacer(minLength: 0)
+                if pads.name != nil { Chip(text: "controller", tint: Theme.success, m: m) }
+            }
+            Text("Project Zomboid on iPhone and iPad")
+                .font(.system(size: m.v(13), weight: .medium)).foregroundStyle(Theme.dim).padding(.top, m.v(1))
+
+            playButton(m).padding(.top, m.v(18))
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: m.v(9)), GridItem(.flexible(), spacing: m.v(9))], spacing: m.v(9)) {
+                TileButton(title: "Settings", subtitle: "Graphics, memory, JIT", icon: "gearshape.fill",
+                           m: m, focused: pad.active && focus == 1, disabled: model.running) { Haptics.tap(); showSettings = true }
+                TileButton(title: "Game Files", subtitle: gameValue, icon: "folder.fill",
+                           m: m, focused: pad.active && focus == 2, disabled: model.running) { Haptics.tap(); gameFiles() }
+                TileButton(title: "Mods", subtitle: "Open the mods folder", icon: "square.stack.3d.up.fill",
+                           m: m, focused: pad.active && focus == 3, disabled: model.running) { Haptics.tap(); FolderLink.open("home/Zomboid/mods") }
+                TileButton(title: "Setup Guide", subtitle: ready ? "Everything is set" : "Finish setting up", icon: "checkmark.seal.fill",
+                           m: m, focused: pad.active && focus == 4, disabled: model.running) { Haptics.tap(); showSetup = true }
+            }
+            .padding(.top, m.v(12))
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func statusColumn(_ m: Metrics) -> some View {
+        VStack(alignment: .leading, spacing: m.v(8)) {
+            HStack {
+                Text("STATUS").font(.system(size: m.v(10), weight: .bold)).tracking(m.v(1.1)).foregroundStyle(Theme.faint)
+                Spacer()
+                Chip(text: ready ? "ready" : "setup needed", tint: ready ? Theme.success : Theme.warning, m: m)
+            }
+            VStack(spacing: 0) {
+                StatusRow(icon: "folder.fill", title: "Game files", value: gameValue, tint: installed ? Theme.success : Theme.warning, m: m)
+                Divider().overlay(Color.white.opacity(0.07))
+                StatusRow(icon: "bolt.fill", title: "JIT", value: jitValue, tint: jitTint, m: m)
+                Divider().overlay(Color.white.opacity(0.07))
+                StatusRow(icon: "gamecontroller.fill", title: "Controller", value: padValue, tint: pads.name == nil ? Theme.faint : Theme.success, m: m)
+                Divider().overlay(Color.white.opacity(0.07))
+                StatusRow(icon: "memorychip", title: "Memory", value: heapValue, tint: Theme.dim, m: m)
+            }
+            .padding(.horizontal, m.v(12))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(14)))
+            .overlay(RoundedRectangle(cornerRadius: m.v(14)).stroke(Color.white.opacity(0.07), lineWidth: 1))
+
+            if librariesDiffer {
+                banner(icon: "exclamationmark.triangle.fill", tint: Theme.warning, m: m,
+                       text: "The game's libraries differ from this app's. Open the setup guide for what to do.")
+            } else if !installed {
+                banner(icon: "tray.and.arrow.down.fill", tint: Theme.warning, m: m,
+                       text: "Import the game on your Mac or with SteamCMD, then choose the zip here.")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func playButton(_ m: Metrics) -> some View {
+        Button { Haptics.tap(); play() } label: {
+            HStack(spacing: m.v(10)) {
+                if model.running { ProgressView().tint(Color.black) }
+                else { Image(systemName: "play.fill").font(.system(size: m.v(15), weight: .bold)) }
+                Text(model.running ? "STARTING" : "PLAY").tracking(m.v(3))
+            }
+            .font(.system(size: m.v(20), weight: .heavy))
+            .frame(maxWidth: .infinity).frame(height: m.v(54))
+            .foregroundStyle(model.running ? Color(white: 0.45) : .black)
+            .background(LinearGradient(colors: model.running ? [Color(white: 0.34), Color(white: 0.27)] : [.white, Color(white: 0.86)],
+                                       startPoint: .top, endPoint: .bottom), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(model.running ? 0.08 : 0.30), lineWidth: 1))
+            .shadow(color: Color.white.opacity(model.running ? 0 : 0.15), radius: m.v(14), y: m.v(4))
+            .overlay(Capsule().stroke(Theme.accent, lineWidth: pad.active && focus == 0 && !model.running ? 2 : 0).padding(-4))
+        }
+        .buttonStyle(PressStyle())
+        .disabled(model.running)
+        .animation(.easeInOut(duration: 0.2), value: model.running)
+    }
+
+    private func bottomBar(_ m: Metrics) -> some View {
+        VStack(spacing: m.v(3)) {
+            ThinkingLine(words: words, active: model.running, m: m)
+            HStack(spacing: m.v(6)) {
+                Text(versionText)
+                Text("·").foregroundStyle(Theme.faint)
+                Text(build.map { "Project Zomboid \($0)" } ?? "Project Zomboid")
+                Text("·").foregroundStyle(Theme.faint)
+                Text(jitMethod == 1 ? "Built-in JIT" : "Manual JIT")
+                if !installed {
+                    Text("·").foregroundStyle(Theme.faint)
+                    Text("game files not installed").foregroundStyle(Theme.warning)
+                }
+                Spacer(minLength: 0)
+                if pad.active { Text("D-pad move · A select · B back").foregroundStyle(Theme.faint) }
+            }
+            .font(.system(size: m.v(10), weight: .medium))
+            .foregroundStyle(Theme.dim.opacity(0.75))
+            .lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, m.v(24)).padding(.top, m.v(6)).padding(.bottom, m.v(10))
+    }
+
+    private func banner(icon: String, tint: Color, m: Metrics, text: String) -> some View {
+        HStack(alignment: .top, spacing: m.v(8)) {
+            Image(systemName: icon).font(.system(size: m.v(11), weight: .semibold))
+            Text(text).font(.system(size: m.v(11))).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tint)
+        .padding(m.v(10))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: m.v(12)))
+        .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(tint.opacity(0.22), lineWidth: 1))
     }
 
     /// PLAY: straight into the game when the game files are there, otherwise into the setup guide.
     private func play() { if GameFiles.installed { onRun(3) } else { showSetup = true } }
     /// Game Files: the setup guide while the files are missing, afterwards a shortcut to the folder in the Files app.
     private func gameFiles() { if GameFiles.installed { FolderLink.open("game") } else { showSetup = true } }
+}
 
-    private func folderButton(_ title: String, icon: String, index: Int, m: Metrics, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.system(size: m.v(14), weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
-                .frame(maxWidth: .infinity).frame(height: m.v(40))
-                .background(Color.white.opacity(0.10), in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
-                .overlay(Capsule().stroke(.white, lineWidth: pad.active && focus == index ? 2 : 0).padding(-5))
+// MARK: - Status / tile components
+
+private struct StatusRow: View {
+    let icon: String, title: String, value: String
+    var tint: Color = .white
+    let m: Metrics
+    var body: some View {
+        HStack(spacing: m.v(9)) {
+            Image(systemName: icon).font(.system(size: m.v(12), weight: .semibold))
+                .foregroundStyle(tint.opacity(0.9)).frame(width: m.v(18))
+            Text(title).font(.system(size: m.v(12), weight: .medium)).foregroundStyle(Theme.dim)
+            Spacer(minLength: m.v(8))
+            Text(value).font(.system(size: m.v(12), weight: .semibold)).foregroundStyle(tint)
+                .lineLimit(1).minimumScaleFactor(0.7)
         }
-        .buttonStyle(.plain).disabled(model.running).opacity(model.running ? 0.4 : 1)
+        .frame(height: m.v(30))
+    }
+}
+
+private struct TileButton: View {
+    let title: String, subtitle: String, icon: String
+    let m: Metrics
+    let focused: Bool
+    let disabled: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: m.v(9)) {
+                Image(systemName: icon).font(.system(size: m.v(14), weight: .semibold)).frame(width: m.v(18))
+                VStack(alignment: .leading, spacing: m.v(1)) {
+                    Text(title).font(.system(size: m.v(12.5), weight: .semibold)).lineLimit(1)
+                    Text(subtitle).font(.system(size: m.v(10))).foregroundStyle(Theme.dim).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, m.v(11))
+            .frame(maxWidth: .infinity, alignment: .leading).frame(height: m.v(48))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(12)))
+            .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(Theme.accent, lineWidth: focused ? 2 : 0).padding(-3))
+        }
+        .buttonStyle(PressStyle())
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1)
+    }
+}
+
+private struct SectionHeader: View {
+    let title: String
+    let m: Metrics
+    var body: some View {
+        Text(title.uppercased())
+            .font(.system(size: m.v(9.5), weight: .bold)).tracking(m.v(1.1))
+            .foregroundStyle(Theme.faint)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, m.v(8)).padding(.horizontal, m.v(4))
     }
 }
 
@@ -407,6 +633,7 @@ enum FolderLink {
 }
 
 /// "✻ Pondering…" style status: the glyph animates and the word changes every few seconds, like a terminal spinner.
+/// The timeline only runs while the game is starting, so an idle launcher costs nothing.
 private struct ThinkingLine: View {
     static let words = ["Pondering", "Cogitating", "Noodling", "Simmering", "Percolating", "Ruminating", "Marinating", "Brewing", "Conjuring",
                         "Mulling", "Churning", "Musing", "Scheming", "Tinkering", "Wrangling", "Hatching", "Spelunking", "Shambling", "Lurching", "Reanimating"]
@@ -416,14 +643,18 @@ private struct ThinkingLine: View {
     let m: Metrics
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.12)) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let glyph = Self.glyphs[Int(t / 0.12) % Self.glyphs.count]
-            let word = words[Int(t / 3.0) % words.count]
-            Text(active ? "\(glyph) \(word)…" : " ")
-                .font(.system(size: m.v(14), weight: .medium, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.85))
-                .frame(height: m.v(18))
+        if active {
+            TimelineView(.periodic(from: .now, by: 0.12)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate
+                let glyph = Self.glyphs[Int(t / 0.12) % Self.glyphs.count]
+                let word = words[Int(t / 3.0) % words.count]
+                Text("\(glyph) \(word)…")
+                    .font(.system(size: m.v(13), weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .frame(height: m.v(18))
+            }
+        } else {
+            Color.clear.frame(height: m.v(18))
         }
     }
 }
@@ -433,11 +664,32 @@ private struct ThinkingLine: View {
 private enum Tab: Int, CaseIterable {
     case display, graphics, performance, controls, jit, tools, log
     var title: String { ["Display", "Graphics", "Performance", "Controls", "JIT", "Tools", "Log"][rawValue] }
-    var icon: String { [UIDevice.current.userInterfaceIdiom == .pad ? "ipad.landscape" : "iphone.landscape", "paintbrush.pointed", "gauge.with.dots.needle.33percent", "gamecontroller", "bolt", "wrench.and.screwdriver", "text.alignleft"][rawValue] }
+    var subtitle: String {
+        ["Resolution, screen margins and how the game fills the display.",
+         "Textures and the graphics backend.",
+         "Memory limits, garbage collection and the JIT compiler.",
+         "The on-screen layout and real controllers.",
+         "How the game gets permission to run JIT.",
+         "Developer options and diagnostics.",
+         "This run's output, ready to share."][rawValue]
+    }
+    var icon: String {
+        [UIDevice.current.userInterfaceIdiom == .pad ? "ipad.landscape" : "iphone.landscape",
+         "paintbrush.pointed.fill", "gauge.with.dots.needle.33percent", "gamecontroller.fill",
+         "bolt.fill", "wrench.and.screwdriver.fill", "text.alignleft"][rawValue]
+    }
     var developerOnly: Bool { self == .tools || self == .log }
+    var section: String {
+        switch self {
+        case .display, .graphics, .performance: return "Game"
+        case .controls: return "Input"
+        case .jit: return "Setup"
+        case .tools, .log: return "Developer"
+        }
+    }
 }
 
-private enum Editor: String, Identifiable { case touch, pad, margins, setup; var id: String { rawValue } }
+private enum Editor: String, Identifiable, Equatable { case touch, pad, margins, setup, controller; var id: String { rawValue } }
 
 /// One line on a settings page. Pages are plain data, so the same rows drive touch, the focus ring and gamepad input.
 struct Row: Identifiable {
@@ -445,6 +697,7 @@ struct Row: Identifiable {
         case choice([String], Binding<Int>)
         case toggle(Binding<Bool>)
         case action(destructive: Bool, () -> Void)
+        case slider(ClosedRange<Double>, Binding<Double>, String)
         case info
         case warning
         case progress(Double, String)
@@ -452,6 +705,7 @@ struct Row: Identifiable {
     let id: String
     let title: String
     let kind: Kind
+    var group: String? = nil                 // renders a section header above this row
     var detail: String? = nil
     var locked = false                      // greyed out and not selectable (set by low memory mode)
     var focusable: Bool {
@@ -480,20 +734,24 @@ struct SettingsView: View {
     @AppStorage("zom.virtualPad") private var virtualPad = false          // on-screen controls act as a game controller instead of keyboard and mouse
     @AppStorage("zom.ramDonorHeap") private var ramDonorHeap = false      // experimental: Java heap in memory held by the donor extension
     @AppStorage("zom.twoFingerZoom") private var twoFingerZoom = true       // two-finger scroll on empty screen (the game's zoom)
-    @AppStorage("zom.zinkBackend") private var zinkBackend = false      // experimental: run the game on Mesa Zink + MoltenVK (OpenGL 4.5) instead of gl4es + MetalANGLE
+    @AppStorage("zom.zinkBackend") private var zinkBackend = false      // experimental: run the game on Mesa Zink + MoltenVK (OpenGL 4.5)
     @AppStorage("zom.zinkLog") private var zinkLog = false              // with the Zink backend: write performance and device details to jvm.log
     @AppStorage("zom.zombieBuddy") private var zombieBuddy = false       // developer: start the game with -javaagent:ZombieBuddy.jar
     @AppStorage("zom.memLog") private var memLog = false                 // developer: write the memory footprint to jvm.log every 5 s
     @AppStorage("zom.simAspect") private var simAspect = 0              // developer: 0 off, 1 4:3, 2 3:2, 3 16:10, 4 16:9
-    @AppStorage("zom.renderRes") private var renderRes = UIDevice.current.userInterfaceIdiom == .pad ? 2 : 1              // 0 540p, 1 720p, 2 900p, 3 1080p (the game's logical height)
+    @AppStorage("zom.renderRes") private var renderRes = UIDevice.current.userInterfaceIdiom == .pad ? 2 : 1              // 0 540p, 1 720p, 2 900p, 3 1080p
     @AppStorage("zom.jitMethod") private var jitMethod = 0              // 0 manual (run the script in StikDebug), 1 built-in StikJIT
+    @StateObject private var pads = PadMonitor()
+    @State private var controllerConfig = ControllerSettings.load()
     @State private var tab = Tab.display
     @State private var focus = 0
     @State private var importingPairing = false
     @State private var editor: Editor?
     @State private var confirmDev = false
 
+    private static let sections = ["Game", "Input", "Setup", "Developer"]
     private var tabs: [Tab] { Tab.allCases.filter { devTools || !$0.developerOnly } }
+
     // Each description explains what the *selected* value does, not the setting in general.
     private var shrinkDetail: String {
         ["Off: Textures load at full size. Best quality, but uses the most graphics memory and can run out.",
@@ -568,83 +826,100 @@ struct SettingsView: View {
          "1080p: The sharpest, showing the most of the world with the smallest UI. The heaviest on the GPU and memory, about 2.25 times the pixels of 720p."][min(max(renderRes, 0), 3)]
             + " Applies the next time the game starts."
     }
-    /// In low memory mode the memory settings show the values the mode forces and ignore changes.
     private var astcDetail: String {
         astc ? "On: Large textures are compressed on the GPU to save memory. The first launch builds a cache and loads slower."
              : "Off: Textures stay uncompressed. Faster first launch, but uses more graphics memory."
     }
+    private var controllerStatus: String {
+        guard let name = pads.name else { return "No controller connected. Connect one with Bluetooth or a cable; the launcher sees it at once." }
+        if let b = pads.battery { return "\(name) · battery \(b)%" }
+        return name
+    }
+    /// Deadzone lives in the controller configuration (the same JSON the GLFW layer reads), so this slider and the Controller screen agree.
+    private var deadZoneBinding: Binding<Double> {
+        Binding(get: { controllerConfig.deadZone },
+                set: { controllerConfig.deadZone = $0; controllerConfig.save() })
+    }
+
     private var rows: [Row] {
         switch tab {
         case .graphics:
             return [
-                Row(id: "shrink", title: "Texture Compression", kind: .choice(["Off", "Balanced", "Strong"], $shrink),
-                    detail: shrinkDetail),
-                Row(id: "hires", title: "High Definition Textures", kind: .toggle(hiResBinding),
-                    detail: hiResDetail),
+                Row(id: "shrink", title: "Texture Compression", kind: .choice(["Off", "Balanced", "Strong"], $shrink), group: "Textures", detail: shrinkDetail),
+                Row(id: "hires", title: "High Definition Textures", kind: .toggle(hiResBinding), detail: hiResDetail),
             ]
         case .display:
             return [
-                Row(id: "res", title: "Render Resolution", kind: .choice(["540p", "720p", "900p", "1080p"], $renderRes), detail: renderResDetail),
-                Row(id: "margin", title: "UI Margins", kind: .choice(["Off", "Auto", "Small", "Large", "Custom"], marginOrderBinding), detail: uiMarginDetail),
+                Row(id: "res", title: "Render Resolution", kind: .choice(["540p", "720p", "900p", "1080p"], $renderRes), group: "Screen", detail: renderResDetail),
+                Row(id: "margin", title: "UI Margins", kind: .choice(["Off", "Auto", "Small", "Large", "Custom"], marginOrderBinding), group: "Game UI", detail: uiMarginDetail),
                 Row(id: "marginEdit", title: "Edit screen margins", kind: .action(destructive: false) { editor = .margins },
                     detail: "Drag the screen edges to set exactly which part of the screen the game UI may use. Saving switches UI Margins to Custom."),
             ]
         case .performance:
             return [
-                Row(id: "heap", title: "Memory Limit", kind: .choice(heapOptions, heapBinding), detail: heapDetail),
-                Row(id: "gc", title: "Garbage Collector", kind: .choice(["Parallel", "pzGC", "SGC", "pzSGC"], gcBinding), detail: gcDetail),
-                Row(id: "astc", title: "ASTC Compression", kind: .toggle($astc),
-                    detail: astcDetail),
+                Row(id: "heap", title: "Memory Limit", kind: .choice(heapOptions, heapBinding), group: "Memory", detail: heapDetail),
                 Row(id: "extramem", title: "Increased Memory", kind: .toggle($ramDonorHeap),
                     detail: "Holds the game's Java memory in helper processes, so iOS doesn't count it against the app. Uses private iOS features and may stop working. Applies on the next start."),
             ] + (ramDonorHeap ? [
                 Row(id: "donorheapsize", title: "Increased Memory Limit", kind: .choice(increasedLimitOptions, $donorHeapGB),
                     detail: "Java memory size while Increased Memory is on. The first choice is your normal Memory Limit. The device's own RAM is the real limit. Applies on the next start."),
-            ] : [])
+            ] : []) + [
+                Row(id: "gc", title: "Collector", kind: .choice(["Parallel", "pzGC", "SGC", "pzSGC"], gcBinding), group: "Garbage collector", detail: gcDetail),
+                Row(id: "astc", title: "ASTC Compression", kind: .toggle($astc), group: "Graphics", detail: astcDetail),
+                Row(id: "jitc", title: "JIT Compiler", kind: .choice(["C1", "C1+C2 gentle", "C1+C2 full"], $jitCompiler), group: "Java", detail: jitCompilerDetail),
+            ]
         case .controls:
             return [
-                Row(id: "vpad", title: "Virtual Gamepad", kind: .toggle($virtualPad),
+                Row(id: "vpad", title: "Virtual Gamepad", kind: .toggle($virtualPad), group: "On-screen",
                     detail: virtualPad ? "On: The on-screen controls act as a game controller (two sticks, A/B/X/Y, D-pad, bumpers, triggers). Use the game's controller mode. Applies on the next start."
                                        : "Off: The on-screen controls send keyboard and mouse input. Turn on to use them as a game controller. Applies on the next start."),
             ] + (virtualPad ? [
                 Row(id: "padstyle", title: "Gamepad Buttons", kind: .choice(["Xbox", "PlayStation"], Binding(get: { padStyle }, set: { padStyle = $0; PadCatalog.setStyle($0) })),
                     detail: padStyle == 1 ? "PlayStation: Buttons are labelled like a DualSense (✕ ○ □ △, L1/R1, L2/R2, Create, Options). They send the same input as the Xbox names."
                                           : "Xbox: Buttons are labelled like an Xbox controller (A B X Y, LB/RB, LT/RT, Back, Start). Switch to PlayStation to use DualSense names."),
-            ] : []) + (virtualPad ? [] : [
+            ] : [
                 Row(id: "twofinger", title: "Two-Finger Zoom", kind: .toggle($twoFingerZoom),
                     detail: "Two fingers landing together on empty screen scroll the game's zoom. Turn off if it triggers by accident. Applies on the next start."),
             ]) + [
-                Row(id: virtualPad ? "padedit" : "touch", title: virtualPad ? "Edit gamepad layout" : "Edit touch layout", kind: .action(destructive: false) { editor = virtualPad ? .pad : .touch },
+                Row(id: virtualPad ? "padedit" : "touch", title: virtualPad ? "Edit gamepad layout" : "Edit touch layout",
+                    kind: .action(destructive: false) { editor = virtualPad ? .pad : .touch }, group: "Layout",
                     detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
                                        : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own."),
-            ] + [
-                Row(id: "n", title: "The on-screen controls hide automatically while a controller, or a keyboard and mouse together, are connected. Changes apply next time the game starts.", kind: .info),
+                Row(id: "ctrlstatus", title: controllerStatus, kind: .info, group: "Real controller"),
+                Row(id: "deadzone", title: "Stick deadzone", kind: .slider(0...0.95, deadZoneBinding, String(format: "%.0f%%", controllerConfig.deadZone * 100)),
+                    detail: "How far a stick must move before the game sees it. Raise it if your character drifts with the sticks at rest."),
+                Row(id: "ctrl", title: "Remap and test controller", kind: .action(destructive: false) { editor = .controller },
+                    detail: "Press a control to bind it, swap A/B for Nintendo-style pads, turn off the automatic hiding of the on-screen controls, and watch what every button reports."),
+                Row(id: "n", title: "The on-screen controls hide while a controller (unless you turn that off above), or a keyboard and mouse together, are connected. Changes apply next time the game starts.", kind: .info),
             ]
         case .jit:
-            var r = [Row(id: "setup", title: "Setup guide", kind: .action(destructive: false) { editor = .setup },
+            var r = [Row(id: "setup", title: "Setup guide", kind: .action(destructive: false) { editor = .setup }, group: "Guide",
                          detail: "Game files, Developer Mode and JIT in one place."),
-                     Row(id: "method", title: "JIT Mode", kind: .choice(["Manual", "Built-in"], $jitMethod),
+                     Row(id: "method", title: "JIT Mode", kind: .choice(["Manual", "Built-in"], $jitMethod), group: "Method",
                          detail: jitMethod == 0 ? "Manual: After pressing Play, run the pziOS script in StikDebug."
                                                 : "Built-in: Attaches automatically. Needs a pairing file, LocalDevVPN connected and Developer Mode on.")]
-            r.append(Row(id: "jitc", title: "JIT Compiler", kind: .choice(["C1", "C1+C2 gentle", "C1+C2 full"], $jitCompiler), detail: jitCompilerDetail))
             if jitMethod == 1 {
                 if model.jitAvailable {
-                    r += [Row(id: "pair", title: model.pairingStatus, kind: .info),
+                    r += [Row(id: "pair", title: model.pairingStatus, kind: .info, group: "Built-in attach"),
                           Row(id: "import", title: "Import pairing file", kind: .action(destructive: false) { importingPairing = true }),
                           Row(id: "prep", title: "Prepare JIT", kind: .action(destructive: false) { model.onPrepareJIT?() })]
                     if !model.jitStatus.isEmpty { r.append(Row(id: "st", title: model.jitStatus, kind: .info)) }
                     r.append(Row(id: "reset", title: "Reset Developer Disk Image", kind: .action(destructive: true) { model.onResetDDI?() }))
                 } else {
-                    r.append(Row(id: "na", title: model.jitUnavailableReason, kind: .info))
+                    r.append(Row(id: "na", title: model.jitUnavailableReason, kind: .warning))
                 }
             }
             return r
         case .tools:
-            return [Row(id: "w", title: "Developer use only.", kind: .info),
-                    Row(id: "aspect", title: "Simulate Aspect Ratio", kind: .choice(["Off", "4:3", "3:2", "16:10", "16:9"], $simAspect),
+            return [Row(id: "w", title: "These options can stop the game starting. Leave them alone unless you are testing something.", kind: .info, group: "Developer use only"),
+                    Row(id: "aspect", title: "Simulate Aspect Ratio", kind: .choice(["Off", "4:3", "3:2", "16:10", "16:9"], $simAspect), group: "Display",
                         detail: "Makes the game think the screen has another shape, stretched over this one, to check its menus and HUD for iPad screens. 4:3 is an iPad Pro 13\". Set UI Margins to Off while testing."),
-                    Row(id: "framepool", title: "Frame Autorelease Pool (Experimental)", kind: .toggle($framePool),
+                    Row(id: "framepool", title: "Frame Autorelease Pool (Experimental)", kind: .toggle($framePool), group: "Graphics",
                         detail: "Frees the graphics layer's per-frame temporary objects at the end of each frame. In testing it removed a steady memory climb (about 170 MB less after 2 to 3 minutes). Applies the next time the game starts."),
+                    Row(id: "zinkbackend", title: "Graphics Backend: Zink (Experimental)", kind: .toggle($zinkBackend),
+                        detail: "Runs the game on Mesa Zink over MoltenVK (desktop OpenGL 4.5) instead of the normal graphics layer, for mods that need it, such as Viewpoint. Experimental: slower than the normal path and uses more memory. Applies on the next start."),
+                    Row(id: "zinklog", title: "Zink Detailed Log", kind: .toggle($zinkLog),
+                        detail: "With the Zink backend on, writes frame timing, draw and pipeline counts and graphics limits to the log every few seconds (Log tab, or jvm.log). Please attach it when reporting performance. Applies on the next start."),
                     Row(id: "zinkprobe", title: zinkRunning ? "Zink Probe: running…" : "Zink Probe", kind: .action(destructive: false) {
                         guard !zinkRunning else { return }
                         zinkRunning = true; zinkResult = ""
@@ -656,14 +931,10 @@ struct SettingsView: View {
                             DispatchQueue.main.async { zinkResult = text; zinkRunning = false }
                         }
                     }, detail: "Loads Mesa Zink (OpenGL on Vulkan) over MoltenVK, creates an OpenGL 4.5 context and tests the features the Viewpoint mod needs. Takes a few seconds. The report is also saved as zink-probe.txt in the app's folder."),
-                    Row(id: "zinkproberes", title: zinkResult.isEmpty ? "Zink Probe result appears here." : zinkResult, kind: .info),
+                    Row(id: "zinkproberes", title: zinkResult.isEmpty ? "Zink Probe result appears here." : zinkResult, kind: .info, group: "Diagnostics"),
                     Row(id: "memlog", title: "Log Memory Use", kind: .toggle($memLog),
                         detail: "Writes the app's memory footprint to jvm.log every 5 seconds, split into Java heap, graphics and native memory."),
-                    Row(id: "zinkbackend", title: "Graphics Backend: Zink (Experimental)", kind: .toggle($zinkBackend),
-                        detail: "Runs the game on Mesa Zink over MoltenVK (desktop OpenGL 4.5) instead of the normal graphics layer, for mods that need it, such as Viewpoint. Experimental: slower than the normal path and uses more memory. Applies on the next start."),
-                    Row(id: "zinklog", title: "Zink Detailed Log", kind: .toggle($zinkLog),
-                        detail: "With the Zink backend on, writes frame timing, draw and pipeline counts and graphics limits to the log every few seconds (Log tab, or jvm.log). Please attach it when reporting performance. Applies on the next start."),
-                    Row(id: "zombiebuddy", title: "ZombieBuddy", kind: .toggle($zombieBuddy),
+                    Row(id: "zombiebuddy", title: "ZombieBuddy", kind: .toggle($zombieBuddy), group: "Mods",
                         detail: "Adds -javaagent:ZombieBuddy.jar when the game starts. Put ZombieBuddy.jar in the game folder (Files, pziOS, game); if it isn't there the setting is skipped. Applies on the next start."),
                     Row(id: "resetargs", title: "Reset launch arguments to the default", kind: .action(destructive: true) {
                         try? FileManager.default.removeItem(at: GameFiles.documents.appendingPathComponent("launch.args")) },
@@ -681,15 +952,12 @@ struct SettingsView: View {
                 Theme.background
                 VStack(spacing: 0) {
                     HStack(spacing: 0) {
-                        sidebar(m).frame(width: m.v(168))
-                        Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1).padding(.vertical, m.v(10))
+                        sidebar(m).frame(width: m.v(196))
+                        Rectangle().fill(Color.white.opacity(0.06)).frame(width: 1).padding(.vertical, m.v(12))
                         content(m)
                     }
                     .frame(maxHeight: .infinity)
-                    Button { dismiss() } label: {
-                        Text("Done").font(.system(size: m.v(15), weight: .semibold)).frame(width: m.v(180), height: m.v(38))
-                            .background(Theme.accent, in: Capsule()).foregroundStyle(.black)
-                    }.buttonStyle(.plain).padding(.top, m.v(10)).padding(.bottom, m.v(24)).fixedSize(horizontal: false, vertical: true).layoutPriority(1)
+                    footer(m)
                 }
             }
         }
@@ -700,7 +968,13 @@ struct SettingsView: View {
             if case .success(let url) = result { model.onImportPairing?(url) }
         }
         .fullScreenCover(item: $editor) { e in
-            switch e { case .touch: TouchLayoutEditor(); case .pad: TouchLayoutEditor(pad: true); case .margins: ScreenMarginEditor(); case .setup: SetupView(model: model, pad: pad) }
+            switch e {
+            case .touch: TouchLayoutEditor()
+            case .pad: TouchLayoutEditor(pad: true)
+            case .margins: ScreenMarginEditor()
+            case .setup: SetupView(model: model, pad: pad)
+            case .controller: ControllerEditor()
+            }
         }
         .alert("Developer Tools", isPresented: $confirmDev) {
             Button("Enable") { devTools = true }
@@ -709,61 +983,134 @@ struct SettingsView: View {
         .onAppear {
             let d = UserDefaults.standard
             if d.object(forKey: "zom.jitCompiler") == nil && d.bool(forKey: "zom.c2") { jitCompiler = 2 }      // the old C2 switch becomes "C1 + C2 full"
+            pads.start()
+        }
+        .onDisappear { pads.stop() }
+        .onChange(of: editor) { _, e in
+            guard e == nil else { return }
+            controllerConfig = ControllerSettings.load()      // the Controller screen may have changed the mapping or deadzone
+            pads.refresh()
         }
         .onChange(of: tab) { _, _ in focus = 0 }
         .onChange(of: devTools) { _, on in if !on && tab.developerOnly { tab = .performance } }
         .onChange(of: pad.tick) { _, _ in handle(pad.last) }
     }
 
+    // MARK: sidebar
+
     private func sidebar(_ m: Metrics) -> some View {
-        VStack(alignment: .leading, spacing: m.v(4)) {
-            Text("Settings").font(.system(size: m.v(20), weight: .bold)).padding(.bottom, m.v(4))
-            // the tabs scroll if there are more of them than fit (Developer Tools adds two), so the sidebar never grows past the screen
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Settings").font(.system(size: m.v(19), weight: .bold)).padding(.bottom, m.v(6)).padding(.leading, m.v(8))
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: m.v(4)) {
-                    ForEach(tabs, id: \.rawValue) { t in
-                        Button { tab = t } label: {
-                            Label(t.title, systemImage: t.icon).font(.system(size: m.v(15), weight: .medium))
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, m.v(10)).frame(height: m.v(38))
-                                .background(tab == t ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 9))
-                                .foregroundStyle(tab == t ? Theme.accent : .white)
-                        }.buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: m.v(1)) {
+                    ForEach(Self.sections, id: \.self) { section in
+                        Text(section.uppercased()).font(.system(size: m.v(9), weight: .bold)).tracking(m.v(1))
+                            .foregroundStyle(Theme.faint)
+                            .padding(.leading, m.v(9)).padding(.top, m.v(10)).padding(.bottom, m.v(3))
+                        ForEach(tabs.filter { $0.section == section }, id: \.rawValue) { t in tabButton(t, m) }
                     }
                 }
+                .padding(.bottom, m.v(6))
             }
-            Button { if devTools { devTools = false } else { confirmDev = true } } label: {
-                Text("Developer Tools").font(.system(size: m.v(13), weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
-                    .frame(maxWidth: .infinity).frame(height: m.v(38))
-                    .background(devTools ? Color.white : Color.white.opacity(0.10), in: Capsule())          // white = on
-                    .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: devTools ? 0 : 1))
-                    .foregroundStyle(devTools ? Color.black : .white)
-            }.buttonStyle(.plain)
+            Button { Haptics.tap(); if devTools { devTools = false } else { confirmDev = true } } label: {
+                Text("Developer Tools").font(.system(size: m.v(12), weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity).frame(height: m.v(32))
+                    .background(devTools ? Color.white : Color.white.opacity(0.08), in: Capsule())          // white = on
+                    .foregroundStyle(devTools ? Color.black : Theme.dim)
+            }.buttonStyle(PressStyle())
         }
-        .padding(.leading, m.v(18)).padding(.trailing, m.v(12)).padding(.top, m.v(34)).padding(.bottom, m.v(12))
+        .padding(.leading, m.v(16)).padding(.trailing, m.v(10)).padding(.top, m.v(24)).padding(.bottom, m.v(12))
     }
+
+    private func tabButton(_ t: Tab, _ m: Metrics) -> some View {
+        Button { Haptics.tap(); withAnimation(.easeOut(duration: 0.16)) { tab = t } } label: {
+            HStack(spacing: m.v(9)) {
+                Image(systemName: t.icon).font(.system(size: m.v(12), weight: .semibold)).frame(width: m.v(18))
+                Text(t.title).font(.system(size: m.v(13), weight: .medium)).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, m.v(9)).frame(height: m.v(32))
+            .background(tab == t ? Color.white.opacity(0.11) : Color.clear, in: RoundedRectangle(cornerRadius: m.v(8)))
+            .foregroundStyle(tab == t ? Color.white : Theme.dim)
+        }.buttonStyle(PressStyle())
+    }
+
+    // MARK: content
 
     @ViewBuilder private func content(_ m: Metrics) -> some View {
         if tab == .log {
-            VStack(alignment: .leading, spacing: m.v(6)) {
-                Text("Developer use only.").font(.system(size: m.v(12))).foregroundStyle(Theme.dim)
+            VStack(alignment: .leading, spacing: m.v(8)) {
+                header(m)
+                HStack(spacing: m.v(10)) {
+                    Text("Read-only. The same output is saved as jvm.log in the app's folder.")
+                        .font(.system(size: m.v(10.5))).foregroundStyle(Theme.dim).lineLimit(1).minimumScaleFactor(0.8)
+                    Spacer(minLength: 8)
+                    if let log = logFileURL {
+                        ShareLink(item: log) {
+                            Label("Share log", systemImage: "square.and.arrow.up").font(.system(size: m.v(11), weight: .semibold))
+                                .padding(.horizontal, m.v(10)).frame(height: m.v(26))
+                                .background(Color.white.opacity(0.12), in: Capsule())
+                        }.buttonStyle(PressStyle())
+                    }
+                }
                 LogView(text: model.log)
-            }.padding(.horizontal, m.v(12)).padding(.top, m.v(34)).padding(.bottom, m.v(12))
+            }
+            .padding(.horizontal, m.v(18)).padding(.top, m.v(24)).padding(.bottom, m.v(12))
+            .padding(.trailing, m.v(10))
         } else {
-            ScrollView {
-                VStack(spacing: m.v(16)) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: m.v(6)) {
+                    header(m)
                     ForEach(rows) { row in
                         RowView(row: row, m: m, focused: pad.active && row.focusable && focusable.indices.contains(focus) && focusable[focus].id == row.id)
                     }
                 }
-                .frame(maxWidth: m.v(680))
-                .padding(.horizontal, m.v(16)).padding(.top, m.v(34)).padding(.bottom, m.v(12))
+                .frame(maxWidth: m.v(660))
+                .padding(.horizontal, m.v(18)).padding(.bottom, m.v(16))
                 .frame(maxWidth: .infinity)
             }
+            .animation(.easeInOut(duration: 0.16), value: tab)
         }
     }
 
+    private func header(_ m: Metrics) -> some View {
+        VStack(alignment: .leading, spacing: m.v(2)) {
+            Text(tab.title).font(.system(size: m.v(22), weight: .bold))
+            Text(tab.subtitle).font(.system(size: m.v(11.5))).foregroundStyle(Theme.dim)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, m.v(6))
+        .padding(.top, m.v(2))
+    }
+
+    private func footer(_ m: Metrics) -> some View {
+        HStack(spacing: m.v(12)) {
+            if pad.active {
+                Text("D-pad move · A select · LB/RB pages · B back")
+                    .font(.system(size: m.v(10), weight: .medium)).foregroundStyle(Theme.faint)
+            }
+            Spacer(minLength: 0)
+            Button { Haptics.tap(); dismiss() } label: {
+                Text("Done").font(.system(size: m.v(14), weight: .semibold)).frame(width: m.v(160), height: m.v(36))
+                    .background(Theme.accent, in: Capsule()).foregroundStyle(.black)
+            }.buttonStyle(PressStyle())
+        }
+        .padding(.horizontal, m.v(20)).padding(.top, m.v(8)).padding(.bottom, m.v(16))
+    }
+
+    /// This run's log, or the one kept from the previous run when this one has not written anything yet (main.m rotates
+    /// jvm.log to jvm-last.log at every start), so a crash can still be attached to a bug report.
+    private var logFileURL: URL? {
+        let fm = FileManager.default
+        let current = GameFiles.documents.appendingPathComponent("jvm.log")
+        let last = GameFiles.documents.appendingPathComponent("jvm-last.log")
+        if fm.fileExists(atPath: current.path) { return current }
+        if fm.fileExists(atPath: last.path) { return last }
+        return nil
+    }
 
     private func handle(_ k: PadKey) {
+        guard editor == nil else { return }        // an editor on top handles its own input; don't navigate behind it
         switch k {
         case .b: dismiss(); return
         case .lb: if let i = tabs.firstIndex(of: tab) { tab = tabs[(i + tabs.count - 1) % tabs.count] }; return
@@ -780,6 +1127,8 @@ struct SettingsView: View {
         case (.right, .choice(let o, let b)): b.wrappedValue = min(o.count - 1, b.wrappedValue + 1)
         case (.left, .toggle(let b)): b.wrappedValue = false
         case (.right, .toggle(let b)): b.wrappedValue = true
+        case (.left, .slider(let r, let v, _)): v.wrappedValue = max(r.lowerBound, v.wrappedValue - (r.upperBound - r.lowerBound) / 20)
+        case (.right, .slider(let r, let v, _)): v.wrappedValue = min(r.upperBound, v.wrappedValue + (r.upperBound - r.lowerBound) / 20)
         case (.a, .choice(let o, let b)): b.wrappedValue = (b.wrappedValue + 1) % o.count
         case (.a, .toggle(let b)): b.wrappedValue.toggle()
         case (.a, .action(_, let f)): f()
@@ -794,31 +1143,54 @@ struct RowView: View {
     let focused: Bool
 
     var body: some View {
+        VStack(alignment: .leading, spacing: m.v(1)) {
+            if let group = row.group { SectionHeader(title: group, m: m) }
+            card()
+        }
+    }
+
+    @ViewBuilder private func card() -> some View {
         if case .action(let destructive, let f) = row.kind {
             // the whole card is the button, including the description, so tapping anywhere on it works
-            Button(action: f) {
-                card {
-                    Text(row.title).font(.system(size: m.v(15), weight: .medium)).foregroundStyle(destructive ? Color.red : .white)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: { Haptics.tap(); f() }) {
+                shell {
+                    HStack(spacing: m.v(10)) {
+                        Text(row.title).font(.system(size: m.v(13.5), weight: .medium))
+                            .foregroundStyle(destructive ? Theme.danger : .white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "chevron.right").font(.system(size: m.v(10), weight: .semibold)).foregroundStyle(Theme.faint)
+                    }
                 }
-            }.buttonStyle(.plain)
+            }.buttonStyle(PressStyle())
         } else {
-            card {
+            shell {
                 switch row.kind {
                 case .choice(let options, let sel):
-                    HStack { title; Spacer(minLength: 8); Pills(options: options, selection: sel, m: m) }
+                    HStack(spacing: m.v(8)) { title; Spacer(minLength: 8); Pills(options: options, selection: sel, m: m) }
                 case .toggle(let on):
-                    HStack { title; Spacer(minLength: 8); Switch(isOn: on, m: m) }
+                    HStack(spacing: m.v(8)) { title; Spacer(minLength: 8); Switch(isOn: on, m: m) }
+                case .slider(let range, let value, let text):
+                    VStack(alignment: .leading, spacing: m.v(6)) {
+                        HStack(spacing: 8) {
+                            title
+                            Spacer(minLength: 8)
+                            Text(text).font(.system(size: m.v(11.5), weight: .semibold, design: .monospaced)).foregroundStyle(Theme.dim)
+                        }
+                        Slider(value: value, in: range).tint(Theme.accent)
+                    }
                 case .info:
-                    Text(row.title).font(.system(size: m.v(12))).foregroundStyle(Theme.dim)
+                    Text(row.title).font(.system(size: m.v(11.5))).foregroundStyle(Theme.dim)
                         .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 case .warning:
-                    Text(row.title).font(.system(size: m.v(12))).foregroundStyle(Color.orange)
-                        .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .top, spacing: m.v(7)) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: m.v(10), weight: .semibold))
+                        Text(row.title).font(.system(size: m.v(11.5))).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(Theme.warning).frame(maxWidth: .infinity, alignment: .leading)
                 case .progress(let value, let text):
                     VStack(alignment: .leading, spacing: m.v(6)) {
                         ProgressView(value: value).tint(Theme.accent)
-                        Text(text).font(.system(size: m.v(11), design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1).truncationMode(.middle)
+                        Text(text).font(.system(size: m.v(10.5), design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1).truncationMode(.middle)
                     }
                 case .action:
                     EmptyView()
@@ -827,22 +1199,24 @@ struct RowView: View {
         }
     }
 
-    private func card<Content: View>(@ViewBuilder _ main: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: m.v(5)) {
+    private func shell<Content: View>(@ViewBuilder _ main: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: m.v(4)) {
             main()
             if let d = row.detail {
-                Text(d).font(.system(size: m.v(11))).foregroundStyle(Theme.dim)
+                Text(d).font(.system(size: m.v(10.5))).foregroundStyle(Theme.dim)
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, row.focusable ? m.v(12) : m.v(4)).padding(.vertical, row.focusable ? m.v(8) : 0)
-        .frame(minHeight: row.focusable ? m.v(44) : 0)
-        .background(row.focusable ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
-        .contentShape(RoundedRectangle(cornerRadius: 10))
-        .padRing(focused)
+        .padding(.horizontal, row.focusable ? m.v(12) : m.v(6))
+        .padding(.vertical, row.focusable ? m.v(9) : m.v(2))
+        .frame(minHeight: row.focusable ? m.v(42) : 0)
+        .background(row.focusable ? AnyShapeStyle(Theme.card) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: m.v(11)))
+        .overlay(RoundedRectangle(cornerRadius: m.v(11)).stroke(Color.white.opacity(row.focusable ? 0.07 : 0), lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: m.v(11)))
+        .padRing(focused, radius: m.v(11))
         .opacity(row.locked ? 0.4 : 1).allowsHitTesting(!row.locked)
     }
-    private var title: some View { Text(row.title).font(.system(size: m.v(15), weight: .medium)) }
+    private var title: some View { Text(row.title).font(.system(size: m.v(13.5), weight: .medium)) }
 }
 
 private struct LogView: View {
@@ -857,6 +1231,7 @@ private struct LogView: View {
             .onChange(of: text) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
         }
         .background(Color(white: 0.02), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
     }
 }
 

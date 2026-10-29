@@ -9,7 +9,7 @@
   &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL3-yellow?style=for-the-badge&labelColor=111111" alt="MIT licence"></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/iOS-26%2B-blue?style=for-the-badge&labelColor=111111" alt="iOS 26 or later">
+  <img src="https://img.shields.io/badge/iOS-17%2B-blue?style=for-the-badge&labelColor=111111" alt="iOS 17 or later">
 </p>
 
 pziOS runs Project Zomboid (Build 42) on an iPhone or iPad. It is a launcher
@@ -48,7 +48,9 @@ step exists.
 ## Features
 
 - Solo play, mods, saves, and direct-connect multiplayer.
-- **Controls**: editable touch layout with an aim stick, game controllers, keyboard and mouse. On-screen controls hide when a controller or keyboard and mouse are connected.
+- **Controls**: editable touch layout with an aim stick, game controllers (remappable, with a stick deadzone and a
+  live input preview), or a virtual gamepad the game sees as a real controller. Keyboard and mouse too. On-screen
+  controls hide when a controller or keyboard and mouse are connected, unless you keep them.
 - **Display**: render resolution presets, UI margins sized to your screen (Auto, or set your own),
   up to 120 Hz, iPad layouts.
 - **Performance options**: memory limit tiers chosen from what iOS lets the app use, garbage
@@ -79,7 +81,7 @@ step exists.
 
 ## Installing
 
-1. Download **`pziOS-<version>-b42.21.ipa`** from the [latest release](https://github.com/OWNER/REPO/releases/latest)
+1. Download **`pziOS-<version>-b42.21.ipa`** from the [latest release](https://github.com/onlyknt/pziOS/releases/latest)
    and sideload it with your own Apple ID.
 2. On your Mac, **prepare the game files** (below), then AirDrop the zip to your device.
 3. Open pziOS and follow the **Setup guide**: choose the zip, then set up JIT.
@@ -161,7 +163,7 @@ which git ignores). For an IPA, edit `release.config` in the repository root.
 | `native/astc/` | C wrapper around ARM's astc-encoder |
 | `patches/` | Patches for the iOS OpenJDK build |
 | `scripts/` | Library conversion, IPA building and signing, the manual JIT script |
-| `docs/` | Build, distribution, game file and JIT guides |
+| `docs/` | Build, distribution, game file, JIT and performance guides |
 | `licenses/` | Licence texts of the components we ship |
 
 ## Licensing and credits

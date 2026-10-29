@@ -35,7 +35,7 @@ struct SetupView: View {
     private var rows: [Row] {
         switch step {
         case .files:
-            var r = [Row(id: "status", title: gameInstalled ? "Project Zomboid is installed" + (build.map { " (build \($0))" } ?? "") + "." : "The game files are not installed yet.", kind: .info)]
+            var r = [Row(id: "status", title: gameInstalled ? "Project Zomboid is installed" + (build.map { " (build \($0))" } ?? "") + "." : "The game files are not installed yet.", kind: .info, group: "Game files")]
             if gameInstalled, NativeCheck.manifest != nil, let c = NativeCheck.last { let m = NativeCheck.message(c); r.append(Row(id: "natives", title: m.text, kind: m.warning ? .warning : .info)) }
             switch importer.state {
             case .scanning, .copying:
@@ -52,14 +52,15 @@ struct SetupView: View {
             }
             return r
         case .jit:
-            var r = [Row(id: "dev", title: "Developer Mode is on", kind: .toggle($devModeConfirmed),
+            var r = [Row(id: "dev", title: devModeConfirmed ? "Developer Mode confirmed" : "Confirm Developer Mode is on",
+                         kind: devModeConfirmed ? .info : .action(destructive: false) { Haptics.tap(); devModeConfirmed = true }, group: "Device",
                          detail: "Turn it on in Settings > Privacy & Security > Developer Mode, then restart the device. iOS only allows JIT while a debugger is attached, and that needs Developer Mode."),
-                     Row(id: "method", title: "JIT Mode", kind: .choice(["Manual", "Built-in"], $jitMethod),
+                     Row(id: "method", title: "JIT Mode", kind: .choice(["Manual", "Built-in"], $jitMethod), group: "Method",
                          detail: jitMethod == 0 ? "Manual: After pressing Play, run the pziOS script in the StikDebug app."
                                                 : "Built-in: Attaches automatically. Needs LocalDevVPN connected and a pairing file for this device.")]
             if jitMethod == 1 {
                 if model.jitAvailable {
-                    r.append(Row(id: "pair", title: model.pairingStatus, kind: model.hasPairing ? .info : .warning))
+                    r.append(Row(id: "pair", title: model.pairingStatus, kind: model.hasPairing ? .info : .warning, group: "Pairing"))
                     r.append(Row(id: "import", title: model.hasPairing ? "Replace pairing file..." : "Import pairing file...", kind: .action(destructive: false) { pickTarget = .pairing; showPicker = true }))
                     r.append(Row(id: "test", title: "Test JIT", kind: .action(destructive: false) { model.onPrepareJIT?() }))
                     if !model.jitStatus.isEmpty { r.append(Row(id: "status", title: model.jitStatus, kind: .info)) }

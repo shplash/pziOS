@@ -9,12 +9,13 @@ enum NativeCheck {
     struct Result: Codable { let date: Date; let matched: Int; let differ: [String]; let missing: [String] }
     private static let key = "zom.nativeCheck"
 
-    static var manifest: Manifest? {
+    /// Read once and kept: this is decoded JSON plus a bundle lookup, and the home screen asks for it on every redraw.
+    static let manifest: Manifest? = {
         let b = Bundle.main
         guard let u = b.url(forResource: "native_manifest", withExtension: "json") ?? b.url(forResource: "native_manifest", withExtension: "json", subdirectory: "runtime/natives"),
               let d = try? Data(contentsOf: u) else { return nil }
         return try? JSONDecoder().decode(Manifest.self, from: d)
-    }
+    }()
     static var last: Result? { UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(Result.self, from: $0) } }
     static func store(_ r: Result?) {
         if let r = r, let d = try? JSONEncoder().encode(r) { UserDefaults.standard.set(d, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }

@@ -244,6 +244,12 @@ static BOOL g_wantPointerLock;
     // loader then fails to make mod paths relative, so hand the JVM only the canonical form.
     { char rp[PATH_MAX]; if (realpath(docs.fileSystemRepresentation, rp)) docs = [NSString stringWithUTF8String:rp]; }
     self.logPath = [docs stringByAppendingPathComponent:@"jvm.log"];
+    {   // keep the previous run's log next to the new one, so a crash can still be reported after the next launch
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *last = [docs stringByAppendingPathComponent:@"jvm-last.log"];
+        [fm removeItemAtPath:last error:nil];
+        if ([fm fileExistsAtPath:self.logPath]) [fm moveItemAtPath:self.logPath toPath:last error:nil];
+    }
 
     // Pipe stdout/stderr (JVM output included) to both the log file and the on-screen view.
     int fds[2]; pipe(fds);
@@ -266,10 +272,16 @@ static BOOL g_wantPointerLock;
     [t start];
 }
 
+// A failure before the JVM exists: say why in the log and give the launcher its buttons back. Without this, PLAY stays greyed
+// out for the rest of the launch, because the engine can only be started once per process.
+- (void)failEarly:(NSString *)why {
+    printf("%s\n", why.UTF8String);
+    dispatch_async(dispatch_get_main_queue(), ^{ [self.model setRunning:NO]; });
+}
+
 - (void)launchJVM:(BOOL)jit docs:(NSString *)docs {
     if (self.useArgsFile && !ZomGameFiles.installed) {
-        printf("Game files are not installed. Open the setup guide (Game Files button) to import them.\n");
-        dispatch_async(dispatch_get_main_queue(), ^{ [self.model setRunning:NO]; });
+        [self failEarly:@"Game files are not installed. Open the setup guide (Game Files button) to import them."];
         return;
     }
     [ZomGameFiles excludeFromBackup];
@@ -314,10 +326,10 @@ static BOOL g_wantPointerLock;
     setenv("ZOMIOS_FMODHAL_LOG", "1", 0);
 
     void *h = dlopen(libjli.UTF8String, RTLD_NOW | RTLD_GLOBAL);
-    if (!h) { printf("dlopen libjli failed: %s\n", dlerror()); return; }
+    if (!h) { [self failEarly:[NSString stringWithFormat:@"dlopen libjli failed: %s", dlerror()]]; return; }
     if (pref_int(@"zom.framePool", 0)) { setenv("ZOMIOS_FRAMEPOOL", "1", 1); printf("settings: per-frame autorelease pool on\n"); }
     JLI_Launch_t launch = (JLI_Launch_t)dlsym(h, "JLI_Launch");
-    if (!launch) { printf("JLI_Launch not found\n"); return; }
+    if (!launch) { [self failEarly:@"JLI_Launch not found"]; return; }
 
     NSMutableArray<NSString *> *a = [NSMutableArray arrayWithObject:[jre stringByAppendingPathComponent:@"bin/java"]];
     [a addObjectsFromArray:@[@"-XX:+UnlockExperimentalVMOptions", @"-XX:+DisablePrimordialThreadGuardPages",
@@ -332,7 +344,7 @@ static BOOL g_wantPointerLock;
         // Documents/launch.args: one JVM/launcher argument per line; $DOCS, $BUNDLE and $JRE are substituted.
         install_default_args(docs);
         NSString *txt = [NSString stringWithContentsOfFile:[docs stringByAppendingPathComponent:@"launch.args"] encoding:NSUTF8StringEncoding error:nil];
-        if (!txt) { printf("Documents/launch.args not found\n"); return; }
+        if (!txt) { [self failEarly:@"Documents/launch.args not found"]; return; }
         a = [NSMutableArray arrayWithObject:[jre stringByAppendingPathComponent:@"bin/java"]];
         for (NSString *line in [txt componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
             NSString *t = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
@@ -482,6 +494,13 @@ static BOOL g_wantPointerLock;
             static const char *kAspect[5] = {NULL, "1.3333", "1.5", "1.6", "1.7778"};
             int ai = MAX(0, MIN(4, pref_int(@"zom.simAspect", 0)));
             if (ai > 0) { setenv("ZOMIOS_ASPECT", kAspect[ai], 1); printf("settings: simulated aspect ratio %s\n", kAspect[ai]); } else unsetenv("ZOMIOS_ASPECT");
+        }
+        // Controller remapping and deadzone (Settings > Controls > Controller): handed to the GLFW layer as JSON. Without a
+        // saved configuration the layer keeps its standard mapping and no deadzone.
+        {
+            NSString *padCfg = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.controllerConfig"];
+            if (padCfg.length) { setenv("ZOMIOS_PAD_CONFIG", padCfg.UTF8String, 1); printf("settings: controller remap applied\n"); }
+            else unsetenv("ZOMIOS_PAD_CONFIG");
         }
         install_ui_margin(docs, res);
         apply_game_options(docs);
