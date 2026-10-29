@@ -1,0 +1,93 @@
+name: IPA
+
+# Builds an unsigned (ad-hoc signed) IPA from this repository, the same way scripts/make-ipa.sh does on a Mac.
+#
+# The device build needs files that are not in the repository (docs/BUILDING.md): the bundled JRE, MetalANGLE,
+# StikJIT and our native libraries, plus the game's own converted libraries if you want an IPA that includes them.
+# Put them in one zip laid out like:
+#
+#     runtime/jre/…            runtime/natives/…
+#     Frameworks/MetalANGLE.framework/…   Frameworks/StikJIT.xcframework/…
+#
+# host it somewhere reachable (a release asset of your own works), and set the repository variable
+# PZIOS_BINARIES_URL to the direct download URL. Without it the check step stops with a message saying what is
+# missing instead of failing somewhere deep in Xcode.
+#
+# Every run leaves pziOS-ipa as an artifact; a tag push (v*) also attaches it to that release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  ipa:
+    name: Unsigned IPA
+    runs-on: macos-15
+    permissions:
+      contents: write          # only used to attach the IPA to a release on tag pushes
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Unpack the build inputs (PZIOS_BINARIES_URL)
+        env:
+          URL: ${{ vars.PZIOS_BINARIES_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${URL:-}" ]; then
+            echo "PZIOS_BINARIES_URL is not set: skipping (the check step will say what is missing)."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/binaries"
+          curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/binaries/payload" "$URL"
+          case "$URL" in
+            *.zip) unzip -q -o "$RUNNER_TEMP/binaries/payload" -d "$RUNNER_TEMP/binaries" ;;
+            *)     tar -xzf "$RUNNER_TEMP/binaries/payload" -C "$RUNNER_TEMP/binaries" ;;
+          esac
+          rm -rf HostApp/runtime HostApp/Frameworks
+          [ -d "$RUNNER_TEMP/binaries/runtime" ]    && cp -R "$RUNNER_TEMP/binaries/runtime" HostApp/runtime
+          [ -d "$RUNNER_TEMP/binaries/Frameworks" ] && cp -R "$RUNNER_TEMP/binaries/Frameworks" HostApp/Frameworks
+          du -sh HostApp/runtime HostApp/Frameworks 2>/dev/null || true
+
+      - name: Check what the device build needs
+        run: |
+          set -u
+          missing=0
+          need() { if [ ! -e "$1" ]; then echo "missing: $1"; missing=1; fi; }
+          need HostApp/runtime/jre/lib/libjli.dylib
+          need HostApp/Frameworks/MetalANGLE.framework
+          need HostApp/Frameworks/StikJIT.xcframework
+          for l in libglfw libGLshim libgl4es_114 libEGLproxy libfmodhal libfmodhal_ca; do
+            need "HostApp/runtime/natives/$l.dylib"
+          done
+          if [ "$missing" = 1 ]; then
+            echo "::error::The device build needs the bundled JRE, MetalANGLE, StikJIT and our native libraries, which are not in this repository. See docs/BUILDING.md; put them in a zip laid out as runtime/ and Frameworks/, host it, and set the repository variable PZIOS_BINARIES_URL to its direct download URL."
+            exit 1
+          fi
+
+      - name: Build the IPA
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh HostApp/sign_jre.sh
+          scripts/make-ipa.sh "$RUNNER_TEMP/pziOS.ipa"
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: pziOS-ipa
+          path: ${{ runner.temp }}/pziOS.ipa
+          if-no-files-found: error
+
+      - name: Attach the IPA to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Built from $GITHUB_SHA by the IPA workflow."
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/pziOS.ipa" --clobber

@@ -15,6 +15,12 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # xcodegen validates that every source directory in project.yml exists. The device target lists HostApp/runtime
+      # (the bundled JRE and our native libraries), which is not in the repository (see docs/BUILDING.md), so create it
+      # empty here: this job builds the launcher UI target, which only needs Sources.
+      - name: Prepare the source tree
+        run: mkdir -p HostApp/runtime
+
       - name: Generate the Xcode project from project.yml
         working-directory: HostApp
         run: xcodegen generate
