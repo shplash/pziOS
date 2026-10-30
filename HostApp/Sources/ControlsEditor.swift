@@ -1144,15 +1144,6 @@ private struct Chip: View {
         ZStack {
             Circle().fill(item.kind == .aimstick ? Color(red: 0.35, green: 0.08, blue: 0.06).opacity(0.45) : Color(white: 0.1).opacity(0.45))
             Circle().stroke(item.kind == .aimstick ? Color(red: 1, green: 0.55, blue: 0.5).opacity(0.7) : Color.white.opacity(0.6), lineWidth: 2)
-            if item.kind == .stick {          // where the dead zone ends, and where Run/Sprint starts
-                Circle().stroke(Color.white.opacity(0.22), lineWidth: 1)
-                    .frame(width: item.size * max(0.05, min(0.6, item.stickDead ?? 0.18)))
-                if (item.stickPushKey ?? 340) != 0 {
-                    Circle().stroke(Color(red: 1, green: 0.72, blue: 0.35).opacity(0.35),
-                                    style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .frame(width: item.size * max(0.5, min(1.0, item.stickPushAt ?? 0.85)))
-                }
-            }
             if item.isStick {
                 Circle().fill(item.kind == .aimstick ? Color(red: 1, green: 0.6, blue: 0.55).opacity(0.6) : Color.white.opacity(0.55)).frame(width: item.size * 0.38, height: item.size * 0.38)
                 if item.kind == .aimstick { Image(systemName: "scope").font(.system(size: item.size * 0.2)).foregroundStyle(.white.opacity(0.8)) }
@@ -1162,6 +1153,15 @@ private struct Chip: View {
                 } else {
                     Text(item.label).font(.system(size: item.size > 50 ? 15 : 12, weight: .bold)).foregroundStyle(.white)
                         .minimumScaleFactor(0.45).lineLimit(1).padding(.horizontal, 4)
+                }
+            }
+            if item.kind == .stick {          // drawn over the thumb: where the dead zone ends, and where Run/Sprint starts
+                Circle().stroke(Color.white.opacity(0.35), lineWidth: 1)
+                    .frame(width: item.size * max(0.05, min(0.6, item.stickDead ?? 0.18)))
+                if (item.stickPushKey ?? 340) != 0 {
+                    Circle().stroke(Color(red: 1, green: 0.72, blue: 0.35).opacity(0.55),
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                        .frame(width: item.size * max(0.5, min(1.0, item.stickPushAt ?? 0.85)))
                 }
             }
         }
