@@ -343,6 +343,7 @@ static NSString *default_icon_for_key(int code) {
 - (void)installDefaultControls;
 - (void)applyLayoutDriving:(BOOL)driving;
 - (void)toggleDriving;
+- (BOOL)hasDriveToggle;
 - (void)startDrivePoll;
 - (void)pollVehicle;
 @end
@@ -610,27 +611,30 @@ static BOOL scroll_reversed(void) { return [NSUserDefaults.standardUserDefaults 
 // Where a radial menu's options go. Writes each option's centre into pts and returns the size of one option; the whole group is then
 // moved onto the screen. A thumb is matched to the option whose centre is nearest, which stays correct after that move.
 static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spread, CGFloat W, CGFloat H, CGPoint *pts) {
-    double s = spread <= 0 ? 1.15 : MAX(0.6, MIN(1.8, spread));       // 1.15 keeps options from touching on a phone
+    double s = spread <= 0 ? 1.0 : MAX(0.7, MIN(1.6, spread));       // 1.0 sits the options against the button and each other
     CGSize item = shape == 2 ? CGSizeMake(104, 38) : CGSizeMake(58, 58);
     if (n <= 0) return item;
     int side = c.x > W / 2 ? -1 : 1;                                       // column and row open towards the middle of the screen
+    CGFloat close = btn / 2 + item.width / 2 + 2;                          // just clear of the button that owns the menu
     if (shape == 1) {
         CGFloat dl = c.x, dr = W - c.x, dt = c.y, db = H - c.y, m = MIN(MIN(dl, dr), MIN(dt, db));
         double out = m == dr ? 180 : m == dl ? 0 : m == dt ? 90 : -90;      // facing away from the nearest edge
         double sign = (out == 180 || out == 90) ? -1 : 1;                   // first option at the top (or the left)
-        CGFloat R = MAX(92, 74 / (2 * sin(M_PI / (2.0 * n)))) * s;
+        // Half a turn for n options: a smaller radius would push the boxes into each other, so that one rule sets the floor.
+        CGFloat R = MAX(close, (item.width / 2 + 2) / sin(M_PI / (2.0 * n))) * s;
         for (int i = 0; i < n; i++) {
             double a = out - 90 * sign + sign * 180.0 * (i + 0.5) / n;
             pts[i] = CGPointMake(c.x + R * cos(a * M_PI / 180), c.y + R * sin(a * M_PI / 180));
         }
     } else if (shape == 2) {
-        CGFloat gap = 9 * s, x = c.x + side * (btn / 2 + 14 + item.width / 2), total = n * item.height + (n - 1) * gap;
+        CGFloat gap = 4 * s, x = c.x + side * (btn / 2 + 4 * s + item.width / 2), total = n * item.height + (n - 1) * gap;
         for (int i = 0; i < n; i++) pts[i] = CGPointMake(x, c.y - total / 2 + item.height / 2 + i * (item.height + gap));
     } else if (shape == 3) {
-        CGFloat gap = 9 * s;
-        for (int i = 0; i < n; i++) pts[i] = CGPointMake(c.x + side * (btn / 2 + 10 + item.width / 2 + i * (item.width + gap)), c.y);
+        CGFloat gap = 4 * s;
+        for (int i = 0; i < n; i++) pts[i] = CGPointMake(c.x + side * (btn / 2 + 4 * s + item.width / 2 + i * (item.width + gap)), c.y);
     } else {
-        CGFloat R = (n <= 4 ? 90 : n <= 6 ? 106 : 120) * s;
+        // A ring as tight as the options allow: the radius is what leaves exactly a hairline between neighbours (n = 1 has none).
+        CGFloat R = (n > 1 ? MAX(btn / 2 + item.width / 2 + 2, (item.width / 2 + 2) / sin(M_PI / n)) : btn / 2 + item.width / 2 + 2) * s;
         for (int i = 0; i < n; i++) {
             double a = -90.0 + 360.0 * i / n;
             pts[i] = CGPointMake(c.x + R * cos(a * M_PI / 180), c.y + R * sin(a * M_PI / 180));
@@ -649,7 +653,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 @interface ZORadial : UIView
 @property (nonatomic) CGPoint norm;
 @property (nonatomic) int shape;                        // 0 ring, 1 arc, 2 column, 3 row
-@property (nonatomic) double spread;                    // spacing multiplier, 0.6-1.6
+@property (nonatomic) double spread;                    // spacing multiplier, 0.7-1.6 (1 opens the gaps, 1.15+ spreads them wide)
 @property (nonatomic, strong) NSArray<ZORadialSlot *> *slots;
 @property (nonatomic) int tapSlot;                      // -1 = a tap does nothing
 @property (nonatomic, weak) UITouch *touch;
@@ -1290,7 +1294,7 @@ static void fps_note_frame(void) {
             r.slots = sl;
             r.tapSlot = [it[@"tapSlot"] respondsToSelector:@selector(intValue)] ? [it[@"tapSlot"] intValue] : -1;
             r.shape = [it[@"radialShape"] respondsToSelector:@selector(intValue)] ? MAX(0, MIN(3, [it[@"radialShape"] intValue])) : 0;
-            r.spread = [it[@"radialSpread"] respondsToSelector:@selector(doubleValue)] ? MAX(0.6, MIN(1.8, [it[@"radialSpread"] doubleValue])) : 1.15;
+            r.spread = [it[@"radialSpread"] respondsToSelector:@selector(doubleValue)] ? MAX(0.7, MIN(1.6, [it[@"radialSpread"] doubleValue])) : 1.0;
             [r setFace:label icon:icon];
             if ([r holds:@"hide"]) radialHide = YES;
             if ([r holds:@"mode"]) radialMode = YES;
@@ -1441,9 +1445,26 @@ static NSString *log_vehicle_state(void) {
     self.drivingActive = driving && !padMode;
     [self removeControlViews];
     if (![self installSavedLayoutJSON:[self layoutJSONDriving:self.drivingActive]]) [self installDefaultControls];
+    // A driving layout saved by an older build has no way back to the on-foot one, so add one rather than leaving the player
+    // stuck in a car layout they cannot leave.
+    if (self.drivingActive && ![self hasDriveToggle]) {
+        ZOButton *b = [ZOButton buttonWithTitle:@"FOOT" kind:8 code:0 size:56];
+        b.iconName = @"figure.walk"; [b refreshIcon];
+        b.norm = CGPointMake(0.20, 0.62); b.tag = 21;
+        [self addSubview:b]; [self.controls addObject:b];
+        glfwi_log("driving layout: it has no way back, so a FOOT button was added");
+    }
     _padConnected = pad_any_connected();
     [self updateControlVisibility];
     [self setNeedsLayout];
+}
+/// YES when something on screen switches between the two layouts: a DRIVE/FOOT button or a radial option that holds it.
+- (BOOL)hasDriveToggle {
+    for (UIView *v in self.controls) {
+        if ([v isKindOfClass:ZOButton.class] && ((ZOButton *)v).kind == 8) return YES;
+        if ([v isKindOfClass:ZORadial.class] && [(ZORadial *)v holds:@"drive"]) return YES;
+    }
+    return NO;
 }
 - (void)toggleDriving {
     if (vpad_active()) return;                       // the gamepad layout drives the pad; there is nothing to switch to

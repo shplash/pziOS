@@ -24,7 +24,7 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var slots: [RadialSlot]? = nil   // radial menu: its options, clockwise from the top (2-8)
     var tapSlot: Int? = nil          // radial menu: the option a quick tap sends; nil = a tap does nothing
     var radialShape: Int? = nil      // radial menu: nil/0 ring, 1 arc, 2 column, 3 row (arc, column and row open away from the nearest edge)
-    var radialSpread: Double? = nil  // radial menu: spacing multiplier (0.6-1.6, nil = 1), for fitting a dense menu on a small screen
+    var radialSpread: Double? = nil  // radial menu: spacing multiplier (0.7-1.6, nil = 1: the options sit snug against the button)
     // Movement stick (kind .stick). The overlay reads these so the stick behaves like a controller's: dead zone, hysteresis
     // and an optional Run/Sprint key held at full push, while still sending the keyboard's WASD.
     var stickDead: Double? = nil     // dead zone as a fraction of the stick's radius (nil = 0.18)
@@ -62,10 +62,11 @@ struct RadialSlot: Codable, Identifiable, Equatable {
 /// (native/glfw-ios/glfw_ios.m), so the editor preview matches the game exactly. Keep the two in step.
 enum RadialGeometry {
     static func layout(shape: Int, n: Int, center c: CGPoint, button btn: CGFloat, spread: Double, W: CGFloat, H: CGFloat) -> (points: [CGPoint], size: CGSize) {
-        let s = max(0.6, min(1.8, spread <= 0 ? 1.15 : spread))
+        let s = max(0.7, min(1.6, spread <= 0 ? 1.0 : spread))
         let item = shape == 2 ? CGSize(width: 104, height: 38) : CGSize(width: 58, height: 58)
         guard n > 0 else { return ([], item) }
         let side: CGFloat = c.x > W / 2 ? -1 : 1
+        let close = btn / 2 + item.width / 2 + 2          // just clear of the button that owns the menu
         var pts: [CGPoint] = []
         func around(_ r: Double, _ deg: Double) -> CGPoint {
             let a = deg * .pi / 180
@@ -76,17 +77,18 @@ enum RadialGeometry {
             let dl = c.x, dr = W - c.x, dt = c.y, db = H - c.y, m = min(dl, dr, dt, db)
             let out: Double = m == dr ? 180 : m == dl ? 0 : m == dt ? 90 : -90
             let sign: Double = (out == 180 || out == 90) ? -1 : 1
-            let r = max(92, 74 / (2 * sin(Double.pi / (2 * Double(n))))) * s
+            // Half a turn for n options: a smaller radius would push the boxes into each other, so that one rule sets the floor.
+            let r = max(Double(close), (Double(item.width) / 2 + 2) / sin(Double.pi / (2 * Double(n)))) * s
             for i in 0..<n { pts.append(around(r, out - 90 * sign + sign * 180 * (Double(i) + 0.5) / Double(n))) }
         case 2:                                   // column: a vertical list beside the button, towards the middle
-            let gap = 9 * s
-            let x = c.x + side * (btn / 2 + 14 + item.width / 2), total = CGFloat(n) * item.height + CGFloat(n - 1) * gap
+            let gap = 4 * s
+            let x = c.x + side * (btn / 2 + CGFloat(4 * s) + item.width / 2), total = CGFloat(n) * item.height + CGFloat(n - 1) * gap
             for i in 0..<n { pts.append(CGPoint(x: x, y: c.y - total / 2 + item.height / 2 + CGFloat(i) * (item.height + gap))) }
         case 3:                                   // row: a horizontal list beside the button
-            let gap = 9 * s
-            for i in 0..<n { pts.append(CGPoint(x: c.x + side * (btn / 2 + 10 + item.width / 2 + CGFloat(i) * (item.width + gap)), y: c.y)) }
-        default:                                  // ring: clockwise from the top
-            let r: Double = (n <= 4 ? 90 : n <= 6 ? 106 : 120) * s
+            let gap = 4 * s
+            for i in 0..<n { pts.append(CGPoint(x: c.x + side * (btn / 2 + CGFloat(4 * s) + item.width / 2 + CGFloat(i) * (item.width + gap)), y: c.y)) }
+        default:                                  // ring: clockwise from the top, touching the button and each other
+            let r = (n > 1 ? max(Double(close), (Double(item.width) / 2 + 2) / sin(Double.pi / Double(n))) : Double(close)) * s
             for i in 0..<n { pts.append(around(r, -90 + 360 * Double(i) / Double(n))) }
         }
         let m: CGFloat = 8                        // move the whole group onto the screen
@@ -106,7 +108,7 @@ private struct RadialPreview: View {
     var body: some View {
         let slots = Array((item.slots ?? []).prefix(8))
         let g = RadialGeometry.layout(shape: item.radialShape ?? 0, n: slots.count, center: CGPoint(x: item.x * W, y: item.y * H),
-                                      button: item.size, spread: item.radialSpread ?? 1.15, W: W, H: H)
+                                      button: item.size, spread: item.radialSpread ?? 1.0, W: W, H: H)
         let corner = min(g.size.width, g.size.height) / 2
         ZStack {
             ForEach(Array(slots.enumerated()), id: \.element.id) { n, sl in
@@ -195,6 +197,7 @@ enum TouchLayoutStore {
     static func reset() { UserDefaults.standard.removeObject(forKey: key) }
 
     static let migratedKey = "zom.aimstickMigrated"
+    static let drivingVersionKey = "zom.drivingLayoutVersion"     // 2 = the car-game driving layout (steering arrows, gas, brake)
 
     /// The aiming stick: a second joystick on the right that aims the character (holds the aim button and points the cursor around the player).
     static var aimStickItem: TouchItem {
@@ -451,7 +454,12 @@ enum TouchLayoutStore {
     static func ensureSaved() {
         let d = UserDefaults.standard
         if d.string(forKey: padKey) == nil { save(padDefaultLayout, pad: true) }
-        if d.string(forKey: drivingKey) == nil { saveDriving(drivingDefaultLayout) }
+        if d.integer(forKey: drivingVersionKey) < 2 {
+            // The driving layout was redesigned (steering arrows instead of a stick, gas/brake/handbrake, a way back to foot),
+            // so a layout an older build saved is replaced once; edits made from now on are kept.
+            saveDriving(drivingDefaultLayout)
+            d.set(2, forKey: drivingVersionKey)
+        } else if d.string(forKey: drivingKey) == nil { saveDriving(drivingDefaultLayout) }
         if d.string(forKey: key) == nil { save(defaultLayout); d.set(true, forKey: migratedKey); return }
         guard !d.bool(forKey: migratedKey) else { return }
         var l = load()
@@ -1382,8 +1390,8 @@ struct TouchLayoutEditor: View {
                 Text("Ring").tag(0); Text("Arc").tag(1); Text("Column").tag(2); Text("Row").tag(3)
             }.pickerStyle(.segmented)
         }
-        row("Spacing", value: String(format: "%.0f%%", (layout.items[i].radialSpread ?? 1.15) * 100)) {
-            Slider(value: Binding(get: { layout.items[i].radialSpread ?? 1.15 }, set: { v in layout.items[i].radialSpread = abs(v - 1.15) < 0.005 ? nil : v }), in: 0.6...1.8, step: 0.05).tint(.white)
+        row("Spacing", value: String(format: "%.0f%%", (layout.items[i].radialSpread ?? 1.0) * 100)) {
+            Slider(value: Binding(get: { layout.items[i].radialSpread ?? 1.0 }, set: { v in layout.items[i].radialSpread = abs(v - 1.0) < 0.005 ? nil : v }), in: 0.7...1.6, step: 0.05).tint(.white)
         }
         row("Tap sends") {
             Menu {

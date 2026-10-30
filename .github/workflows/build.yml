@@ -134,6 +134,7 @@ jobs:
             SYMROOT="$PWD/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             PZ_BUNDLE_ID=com.knt.pzios PZ_TEAM_ID="" PZ_DISPLAY_NAME=pziOS build | tail -5
           ls -la build/Release-iphoneos/pziOS.app/pziOS
+          find build/Release-iphoneos/pziOS.app -maxdepth 2 \( -name '*.lua' -o -name '*.args' \) -print
 
       - name: Swap the new parts into the IPA
         run: |
@@ -154,6 +155,20 @@ jobs:
           codesign -d --entitlements - --xml "$APP/$EXE" > "$ENT" 2>/dev/null || codesign -d --entitlements :- "$APP/$EXE" > "$ENT"
           [ -s "$ENT" ] || { echo "::error::could not read the release app's entitlements"; exit 1; }
           cp build/Release-iphoneos/pziOS.app/pziOS "$APP/$EXE"
+
+          # The game's own Lua scripts come from this build, not from the release IPA (which predates them). Without them the
+          # app cannot install pziOSDrive.lua given to the game, so the driving layout never switches by itself and the log
+          # says "driving layout script missing from the app".
+          SRC_APP="$PWD/build/Release-iphoneos/pziOS.app"
+          for f in pziOSSafeArea.lua pziOSDrive.lua; do
+            S=$(find "$SRC_APP" -name "$f" -print -quit)
+            [ -n "$S" ] || { echo "::error::$f is not in the built app, so the patched IPA would not have it"; exit 1; }
+            cp "$S" "$APP/$(basename "$S")"
+            echo "resource: $(basename "$S")"
+          done
+          S=$(find "$SRC_APP" -name 'default.launch.args' -print -quit)
+          [ -z "$S" ] || cp "$S" "$APP/default.launch.args"
+
           codesign -f -s - --entitlements "$ENT" "$APP/$EXE"
           codesign -f -s - "$APP"
           codesign --verify --deep --strict "$APP"
@@ -161,6 +176,10 @@ jobs:
           ls -la pziOS.ipa
           /usr/bin/unzip -t pziOS.ipa >/dev/null
           /usr/bin/unzip -Z1 pziOS.ipa | grep -qx "Payload/$(basename "$APP")/Info.plist"
+          # The scripts that make the automatic driving switch work must be inside the finished file, not just the build.
+          for f in pziOSSafeArea.lua pziOSDrive.lua; do
+            /usr/bin/unzip -Z1 pziOS.ipa | grep -qx "Payload/$(basename "$APP")/$f"
+          done
 
       - uses: actions/upload-artifact@v4
         with:

@@ -67,9 +67,11 @@ Markdown are skipped). It also has a "Run workflow" button for any release tag.
   way the IPA job does. The device target cannot be built from the repository alone, so these are the compile checks.
 - **IPA**: builds `libglfw.dylib` and the launcher executable from this repository, swaps them into an official pziOS
   release IPA (the `release_tag` input, or the latest), keeping that release's Java runtime, graphics libraries and JIT
-  helper, and re-signs the app ad hoc with the release's entitlements. It runs on the standard macOS runner and needs no
-  particular Xcode version. The IPA is uploaded as the `pziOS-ipa` artifact and attached to the draft **builds** release,
-  so it can be downloaded from the Releases page like any other release asset.
+  helper, and re-signs the app ad hoc with the release's entitlements. The app's own game scripts (`pziOSSafeArea.lua`,
+  `pziOSDrive.lua`) and the default `launch.args` are taken from this build too, because the launcher copies them into the
+  game at every start; the job fails rather than producing an IPA without them. It runs on the standard macOS runner and
+  needs no particular Xcode version. The IPA is uploaded as the `pziOS-ipa` artifact and attached to the draft **builds**
+  release, so it can be downloaded from the Releases page like any other release asset.
 
 `scripts/make-ipa.sh` remains the way to build a complete IPA from your own binaries (steps 1-5) on a Mac; the
 workflow above is the shortcut for testing launcher and overlay changes only.

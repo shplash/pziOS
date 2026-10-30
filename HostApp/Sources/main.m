@@ -135,6 +135,21 @@ static void apply_game_options(NSString *docs) {
     printf("options.ini: texture2x=%s doVideoEffects=%s\n", want[@"texture2x"].UTF8String, want[@"doVideoEffects"].UTF8String);
 }
 
+// A bundled game script. xcodegen puts GameScripts in the app's resources, which puts the files either at the top of the
+// resource directory or, when the folder itself is copied, one level down; both are checked so a packaging change cannot
+// silently leave the game without the script that switches layouts in a vehicle.
+static NSString *bundle_lua(NSString *name) {
+    NSBundle *b = NSBundle.mainBundle;
+    NSString *p = [b pathForResource:name ofType:@"lua"];
+    if (p) return p;
+    NSString *file = [name stringByAppendingString:@".lua"], *root = b.resourcePath;
+    for (NSString *dir in @[@"GameScripts", @"game", @"media"]) {
+        NSString *x = [[root stringByAppendingPathComponent:dir] stringByAppendingPathComponent:file];
+        if ([NSFileManager.defaultManager fileExistsAtPath:x]) return x;
+    }
+    return nil;
+}
+
 // UI margins: ship the safe-area Lua script into the game's client Lua folder and tell it how far to keep the UI from the screen edges.
 // The distances come from ZomMargins (LauncherView.swift): Auto from this device's corner radius and safe area, or the region saved by the
 // screen margin editor (Custom).
@@ -145,7 +160,7 @@ static void install_ui_margin(NSString *docs, NSString *res) {
     if (level > 0) { NSArray<NSNumber *> *px = [ZomMargins gamePixelsWithLevel:level]; for (int i = 0; i < 4 && i < (int)px.count; i++) m[i] = px[i].intValue; }
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *dir = [docs stringByAppendingPathComponent:@"game/media/lua/client"];
-    NSString *src = [[NSBundle mainBundle] pathForResource:@"pziOSSafeArea" ofType:@"lua"];
+    NSString *src = bundle_lua(@"pziOSSafeArea");
     if (src && [fm fileExistsAtPath:dir]) {
         [fm removeItemAtPath:[dir stringByAppendingPathComponent:@"ZomIOSSafeArea.lua"] error:nil];      // old name from earlier builds
         NSString *dst = [dir stringByAppendingPathComponent:@"pziOSSafeArea.lua"];
@@ -164,7 +179,7 @@ static void install_ui_margin(NSString *docs, NSString *res) {
 static void install_drive_script(NSString *docs) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *dir = [docs stringByAppendingPathComponent:@"game/media/lua/client"];
-    NSString *src = [[NSBundle mainBundle] pathForResource:@"pziOSDrive" ofType:@"lua"];
+    NSString *src = bundle_lua(@"pziOSDrive");
     if (src && [fm fileExistsAtPath:dir]) {
         NSString *dst = [dir stringByAppendingPathComponent:@"pziOSDrive.lua"];
         NSData *a = [NSData dataWithContentsOfFile:src], *b = [NSData dataWithContentsOfFile:dst];
@@ -174,7 +189,9 @@ static void install_drive_script(NSString *docs) {
                             @"home/Zomboid/pzios_drive_ready.txt", @"home/Zomboid/Lua/pzios_drive_ready.txt"]) {
         [fm removeItemAtPath:[docs stringByAppendingPathComponent:rel] error:nil];
     }
-    printf("settings: driving layout script %s\n", src ? "installed" : "missing");
+    // "missing from the app" is a build problem, "waiting" is the game folder not being unpacked yet: the two read very
+    // differently in a log, and both are worth telling apart from "installed".
+    printf("settings: driving layout script %s\n", !src ? "missing from the app" : ([fm fileExistsAtPath:dir] ? "installed" : "waiting for the game folder"));
 }
 
 // Default JVM arguments: written to Documents/launch.args when the file is missing, and replaced by a newer built-in default only while the

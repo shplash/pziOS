@@ -12,10 +12,11 @@ local ticks = 0
 print("[pziOS] drive script loaded")
 
 -- A one-off marker so the app's log can say whether the game ran this script at all (see pollVehicle in glfw_ios.m).
-do
+-- Guarded: a game build without the file API must not stop the rest of the script from loading.
+pcall(function()
     local w = getFileWriter("pzios_drive_ready.txt", true, false)
     if w then w:write("1"); w:close() end
-end
+end)
 
 local function write(inCar)
     local w = getFileWriter("pzios_vehicle.txt", true, false)
