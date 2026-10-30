@@ -16,8 +16,15 @@ on:
         description: "pziOS release to patch (blank = the latest release)"
         required: false
         default: ""
+  # Also builds on its own whenever the parts it replaces change, so a testable IPA exists without anyone
+  # remembering to run it from the Actions tab. Documentation-only pushes do not start it.
   push:
+    branches: [main]
     tags: ["v*"]
+    paths:
+      - "native/glfw-ios/**"
+      - "HostApp/**"
+      - ".github/workflows/ipa.yml"
 
 concurrency:
   group: ipa-${{ github.ref }}

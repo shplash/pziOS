@@ -67,8 +67,9 @@ built from the repository alone, so these two are the compile checks for the Swi
 `.github/workflows/ipa.yml` ("Patched IPA") produces a testable IPA without needing the JRE, MetalANGLE sources,
 StikJIT or the game's libraries: it compiles `libglfw.dylib` and the launcher executable from this repository, then
 swaps them into an official release IPA (chosen with the `release_tag` input, or the latest), keeping that release's
-runtime and JIT helper, and re-signs the app ad hoc with the release's entitlements. Run it from the Actions tab; the
-result is the `pziOS-ipa` artifact. It runs on the standard macOS runner and needs no particular Xcode version.
+runtime and JIT helper, and re-signs the app ad hoc with the release's entitlements. It runs on the standard macOS
+runner and needs no particular Xcode version. It starts by itself on pushes to `main` that touch `HostApp/` or the
+overlay, and can be run by hand from the Actions tab for any release; the result is the `pziOS-ipa` artifact.
 
 `scripts/make-ipa.sh` remains the way to build a complete IPA from your own binaries (steps 1-5) on a Mac; the
 workflow above is the shortcut for testing launcher and overlay changes only.
