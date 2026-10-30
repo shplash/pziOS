@@ -699,6 +699,12 @@ struct TouchLayoutEditor: View {
     private var slotDriving: Bool { driving && !pad }
     private var builtInsForSlot: [TouchPreset] { slotDriving ? TouchLayoutStore.drivingPresets : TouchLayoutStore.builtInPresets }
 
+    /// The layout as it shipped for the mode being edited: what Reset loads, and what "Reset this control" puts back.
+    private var shippedLayout: TouchLayout {
+        slotDriving ? TouchLayoutStore.drivingDefaultLayout
+                    : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
+    }
+
     /// Saves the layout being edited, to the place its mode uses.
     private func persist() { TouchLayoutStore.save(layout, pad: pad, driving: slotDriving) }
 
@@ -973,8 +979,7 @@ struct TouchLayoutEditor: View {
                 addMenu
                 Button {
                     Haptics.tap()
-                    layout = slotDriving ? TouchLayoutStore.drivingDefaultLayout
-                                         : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
+                    layout = shippedLayout
                     TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); selected = nil
                     currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
                 } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
@@ -1368,10 +1373,7 @@ struct TouchLayoutEditor: View {
                     .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
             }.buttonStyle(PressStyle())
             // A control that came with the layout can be put back exactly as it shipped, instead of being deleted and re-added by hand.
-            // The driving layout has its own shipped defaults.
-            let shipped = slotDriving ? TouchLayoutStore.drivingDefaultLayout
-                                      : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
-            if let original = shipped.items.first(where: { $0.id == item.id }),
+            if let original = shippedLayout.items.first(where: { $0.id == item.id }),
                original != item {
                 Button {
                     Haptics.tap(); layout.items[i] = original
