@@ -12,7 +12,9 @@ targets:
       - JIT
       - Shared
       - Resources
-      - GameScripts
+      # A folder reference, so the game scripts keep their folder in the app and are copied whatever their file type;
+      # main.m (bundle_lua) looks for them in the resource root and in GameScripts/.
+      - { path: GameScripts, type: folder, buildPhase: resources }
       - Defaults
       - { path: runtime, type: folder, buildPhase: resources }
     dependencies:
