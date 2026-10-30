@@ -170,7 +170,8 @@ static void install_drive_script(NSString *docs) {
         NSData *a = [NSData dataWithContentsOfFile:src], *b = [NSData dataWithContentsOfFile:dst];
         if (![a isEqualToData:b]) { [fm removeItemAtPath:dst error:nil]; [fm copyItemAtPath:src toPath:dst error:nil]; }
     }
-    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt", @"pzios_vehicle.txt"]) {
+    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt", @"pzios_vehicle.txt",
+                            @"home/Zomboid/pzios_drive_ready.txt", @"home/Zomboid/Lua/pzios_drive_ready.txt"]) {
         [fm removeItemAtPath:[docs stringByAppendingPathComponent:rel] error:nil];
     }
     printf("settings: driving layout script %s\n", src ? "installed" : "missing");
