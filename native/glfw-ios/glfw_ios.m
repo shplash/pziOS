@@ -243,9 +243,45 @@ static void vpad_set_stick(int stick, float x, float y) {
     g_vpadAxes[i + 1] = MAX(-1.0f, MIN(1.0f, y * k));
 }
 
+// Icons for the on-screen controls. The touch editor writes an "icon" name (an SF Symbol) for each control and each
+// radial option, and "zom.touchIcons" switches them on or off. A name the running iOS does not have simply falls back to
+// the text label, so nothing can end up blank.
+static BOOL icons_enabled(void) {
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.touchIcons"];
+    return v ? [v boolValue] : YES;
+}
+static UIImage *icon_image(NSString *name, CGFloat points) {
+    if (name.length == 0 || !icons_enabled()) return nil;
+    UIImage *img = [UIImage systemImageNamed:name];
+    if (!img) return nil;
+    img = [img imageWithConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:MAX(11, points) weight:UIImageSymbolWeightSemibold]];
+    return [img imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+/// Icons for the built-in fallback buttons (used when a layout has no icon of its own); the touch editor has the same
+/// defaults in its catalogue, so a button looks the same before and after a layout is saved.
+static NSString *default_icon_for_key(int code) {
+    switch (code) {
+        case 69:  return @"hand.tap.fill";          // E, interact
+        case 340: return @"figure.run";              // Shift, run
+        case 341: return @"scope";                   // Ctrl, aim
+        case 32:  return @"bolt.fill";               // Space, shove
+        case 67:  return @"figure.walk";             // C, crouch
+        case 73:  return @"bag.fill";                // I, inventory
+        case 72:  return @"heart.fill";              // H, health
+        case 77:  return @"map.fill";                // M, map
+        case 70:  return @"lightbulb.fill";          // F, light
+        case 256: return @"escape";                  // Esc
+        case 258: return @"rectangle.on.rectangle";  // Tab
+        case 257: return @"return";                  // Enter
+        default:  return nil;
+    }
+}
+
 @interface ZOButton : UIView
 @property (nonatomic) int kind, code;
 @property (nonatomic, strong) UILabel *label;
+@property (nonatomic, strong) UIImageView *iconView;
+@property (nonatomic, copy) NSString *iconName;     // SF Symbol; shown instead of the label while icons are on
 @property (nonatomic) BOOL down;
 @property (nonatomic) CGPoint norm;      // centre as a fraction of the view (from the saved layout); (0,0) = use the built-in position
 // Two-thumb options, key and mouse buttons only, all off unless the touch editor turns them on:
@@ -265,6 +301,7 @@ static void vpad_set_stick(int stick, float x, float y) {
 + (instancetype)buttonWithTitle:(NSString *)t kind:(int)k code:(int)c size:(CGFloat)size;
 - (void)releaseLatch;
 - (void)stopAuto;
+- (void)refreshIcon;
 @end
 @interface GLFWiOSView : UIView <UIGestureRecognizerDelegate>
 @property (nonatomic) GLFWwindow *win;
@@ -309,7 +346,21 @@ static void vpad_set_stick(int stick, float x, float y) {
     b.label.text = t; b.label.textAlignment = NSTextAlignmentCenter; b.label.textColor = UIColor.whiteColor;
     b.label.font = [UIFont boldSystemFontOfSize:size > 50 ? 15 : 12]; b.label.userInteractionEnabled = NO;
     [b addSubview:b.label];
+    b.iconView = [[UIImageView alloc] initWithFrame:CGRectInset(b.bounds, size * 0.24, size * 0.24)];
+    b.iconView.contentMode = UIViewContentModeScaleAspectFit;
+    b.iconView.userInteractionEnabled = NO;
+    b.iconView.hidden = YES;
+    [b addSubview:b.iconView];
     return b;
+}
+/// Shows the icon when there is one and icons are on, otherwise the text label. The PAD/TCH button (kind 4) and the fire
+/// mode toggle (kind 7) always keep their text, because that text is the state you need to read.
+- (void)refreshIcon {
+    BOOL allow = (self.kind != 4 && self.kind != 7);
+    UIImage *img = allow ? icon_image(self.iconName, self.bounds.size.width * 0.42) : nil;
+    self.iconView.image = img;
+    self.iconView.hidden = (img == nil);
+    self.label.hidden = (img != nil);
 }
 - (void)updateLook {
     if (self.armed && !self.down) self.backgroundColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.2 alpha:0.6];     // armed: amber until it fires on release
@@ -520,6 +571,7 @@ static BOOL scroll_reversed(void) { return [NSUserDefaults.standardUserDefaults 
 // (RadialGeometry in ControlsEditor.swift), so keep the two in step.
 @interface ZORadialSlot : NSObject
 @property (nonatomic, copy) NSString *kind, *label, *target;     // kind: none, key, mouse, hide, mode, keyboard, firemode
+@property (nonatomic, copy) NSString *icon;                      // SF Symbol, drawn instead of the label while icons are on
 @property (nonatomic) int code;
 @end
 @implementation ZORadialSlot
@@ -577,8 +629,10 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 @property (nonatomic) NSUInteger token;
 @property (nonatomic, strong) NSMutableArray<UIView *> *ringViews;
 @property (nonatomic, strong) UILabel *face;
+@property (nonatomic, strong) UIImageView *faceIcon;
 - (BOOL)holds:(NSString *)kind;
 - (void)setFaceText:(NSString *)t;
+- (void)setFace:(NSString *)t icon:(NSString *)icon;
 - (void)closeRing;
 @end
 @implementation ZORadial
@@ -591,8 +645,20 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.face.textAlignment = NSTextAlignmentCenter; self.face.textColor = UIColor.whiteColor; self.face.userInteractionEnabled = NO;
         self.face.adjustsFontSizeToFitWidth = YES; self.face.minimumScaleFactor = 0.6;
         [self addSubview:self.face];
+        self.faceIcon = [[UIImageView alloc] initWithFrame:CGRectInset(self.bounds, f.size.width * 0.26, f.size.width * 0.26)];
+        self.faceIcon.contentMode = UIViewContentModeScaleAspectFit;
+        self.faceIcon.userInteractionEnabled = NO;
+        self.faceIcon.hidden = YES;
+        [self addSubview:self.faceIcon];
     }
     return self;
+}
+- (void)setFace:(NSString *)t icon:(NSString *)icon {
+    UIImage *img = icon_image(icon, self.bounds.size.width * 0.42);
+    self.faceIcon.image = img;
+    self.faceIcon.hidden = (img == nil);
+    self.face.hidden = (img != nil);
+    [self setFaceText:t];
 }
 - (void)setFaceText:(NSString *)t {
     CGFloat w = self.bounds.size.width;
@@ -610,16 +676,26 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     self.ringViews = [NSMutableArray array];
     for (int i = 0; i < n; i++) {
         ZORadialSlot *s = self.slots[i];
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, sz.width, sz.height)];
-        l.center = pts[i];
+        UIView *v = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sz.width, sz.height)];
+        v.center = pts[i];
         BOOL empty = [s.kind isEqualToString:@"none"];
-        l.text = s.label.length ? s.label : (empty ? @"\u2014" : @"?");
-        l.textAlignment = NSTextAlignmentCenter; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:13];
-        l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.55; l.userInteractionEnabled = NO;
-        l.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.78]; l.layer.cornerRadius = MIN(sz.width, sz.height) / 2; l.layer.masksToBounds = YES;
-        l.layer.borderWidth = 2; l.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
-        if (empty) l.alpha = 0.45;
-        [gv addSubview:l]; [self.ringViews addObject:l];
+        v.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.78]; v.layer.cornerRadius = MIN(sz.width, sz.height) / 2; v.layer.masksToBounds = YES;
+        v.layer.borderWidth = 2; v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
+        v.userInteractionEnabled = NO;
+        UIImage *img = icon_image(s.icon, sz.width * 0.42);
+        if (img) {
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectInset(v.bounds, sz.width * 0.24, sz.height * 0.24)];
+            iv.contentMode = UIViewContentModeScaleAspectFit; iv.image = img;
+            [v addSubview:iv];
+        } else {
+            UILabel *l = [[UILabel alloc] initWithFrame:v.bounds];
+            l.text = s.label.length ? s.label : (empty ? @"\u2014" : @"?");
+            l.textAlignment = NSTextAlignmentCenter; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:13];
+            l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.55; l.userInteractionEnabled = NO;
+            [v addSubview:l];
+        }
+        if (empty) v.alpha = 0.45;
+        [gv addSubview:v]; [self.ringViews addObject:v];
     }
     [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
 }
@@ -695,12 +771,16 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 @interface ZOJoystick : UIView
 @property (nonatomic) BOOL up, left, down, right;
 @property (nonatomic, strong) CAShapeLayer *thumb;
+@property (nonatomic, strong) CAShapeLayer *deadRing, *pushRing, *push2Ring;
 @property (nonatomic) CGPoint norm;
 @property (nonatomic) CGFloat deadZone;          // fraction of the radius: 0.05...0.55
-@property (nonatomic) int pushKey;               // GLFW key held at full push; 0 = none (Shift = run, Alt = sprint)
-@property (nonatomic) CGFloat pushAt;            // 0.5...1.0 of the travel past the dead zone
+@property (nonatomic) int pushKey;               // first stage, held from pushAt on (Shift = run)
+@property (nonatomic) CGFloat pushAt;            // 0.3...1.5 of the travel; above 1 means past the rim
+@property (nonatomic) int pushKey2;              // second stage, held from push2At on (Alt = sprint)
+@property (nonatomic) CGFloat push2At;           // 0.5...1.5
 @property (nonatomic) int keyUp, keyLeft, keyDown, keyRight;
-@property (nonatomic) BOOL pushing;
+@property (nonatomic) BOOL pushing, pushing2;
+- (void)updateRings;
 @end
 @implementation ZOJoystick
 - (instancetype)initWithFrame:(CGRect)f {
@@ -714,35 +794,67 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
         self.thumb.position = CGPointMake(f.size.width / 2, f.size.height / 2);
         [self.layer addSublayer:self.thumb];
-        self.deadZone = 0.18; self.pushKey = 340; self.pushAt = 0.85;      // Shift at full push, like a controller's run
+        self.deadZone = 0.18; self.pushKey = 340; self.pushAt = 0.85;      // run from 85%...
+        self.pushKey2 = 342; self.push2At = 1.15;                          // ...and sprint once pushed past the rim
         self.keyUp = 87; self.keyLeft = 65; self.keyDown = 83; self.keyRight = 68;
+        [self updateRings];
     }
     return self;
+}
+/// Rings on the stick itself: where the dead zone ends, where Run starts and where Sprint starts (that one sits outside
+/// the rim, which is where the stick has to be dragged to reach it).
+- (void)updateRings {
+    CGFloat size = self.bounds.size.width;
+    CGPoint c = CGPointMake(size / 2, size / 2);
+    if (!self.deadRing) {
+        self.deadRing = [CAShapeLayer layer]; self.deadRing.fillColor = nil;
+        self.deadRing.strokeColor = [UIColor colorWithWhite:1 alpha:0.22].CGColor; self.deadRing.lineWidth = 1;
+        [self.layer addSublayer:self.deadRing];
+    }
+    if (!self.pushRing) {
+        self.pushRing = [CAShapeLayer layer]; self.pushRing.fillColor = nil;
+        self.pushRing.strokeColor = [UIColor colorWithRed:1 green:0.72 blue:0.35 alpha:0.40].CGColor; self.pushRing.lineWidth = 1.5;
+        self.pushRing.lineDashPattern = @[@4, @4];
+        [self.layer addSublayer:self.pushRing];
+    }
+    if (!self.push2Ring) {
+        self.push2Ring = [CAShapeLayer layer]; self.push2Ring.fillColor = nil;
+        self.push2Ring.strokeColor = [UIColor colorWithRed:1 green:0.5 blue:0.35 alpha:0.55].CGColor; self.push2Ring.lineWidth = 1.5;
+        self.push2Ring.lineDashPattern = @[@2, @4];
+        [self.layer addSublayer:self.push2Ring];
+    }
+    CGFloat dz = MAX(0.05, MIN(0.60, self.deadZone));
+    CGFloat p1 = MAX(0.3, MIN(1.5, self.pushAt));
+    CGFloat p2 = MAX(0.5, MIN(1.5, self.push2At));
+    self.deadRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - size * dz / 2, c.y - size * dz / 2, size * dz, size * dz)].CGPath;
+    self.pushRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - size * p1 / 2, c.y - size * p1 / 2, size * p1, size * p1)].CGPath;
+    self.push2Ring.hidden = (self.pushKey2 == 0 || self.pushKey2 == self.pushKey || p2 <= p1 + 0.05);
+    self.push2Ring.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - size * p2 / 2, c.y - size * p2 / 2, size * p2, size * p2)].CGPath;
 }
 - (void)set:(BOOL)v key:(int)key flag:(BOOL *)f { if (*f != v) { *f = v; push_key(key, v ? GLFW_PRESS : GLFW_RELEASE); } }
 - (void)update:(UITouch *)t {
     CGFloat r = self.bounds.size.width / 2; CGPoint c = CGPointMake(r, r), p = [t locationInView:self];
     CGFloat dx = p.x - c.x, dy = p.y - c.y, len = hypot(dx, dy);
-    if (len > r) { dx *= r / len; dy *= r / len; len = r; }
-    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(c.x + dx, c.y + dy); [CATransaction commit];
+    CGFloat mag = r > 0 ? len / r : 0;                                       // keeps counting past the rim, up to ~1.5+
+    CGFloat vis = (len > r && len > 0) ? r / len : 1;                        // the thumb itself stays on the rim
+    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(c.x + dx * vis, c.y + dy * vis); [CATransaction commit];
 
-    CGFloat mag = r > 0 ? len / r : 0;
     CGFloat dz = MAX(0.02, MIN(0.60, self.deadZone));
-    CGFloat travel = mag <= dz ? 0 : (mag - dz) / MAX(0.0001, 1 - dz);        // 0 at the dead zone, 1 at the rim
-    CGFloat ux = mag > 0 ? dx / r / mag : 0, uy = mag > 0 ? dy / r / mag : 0;  // unit direction
+    CGFloat travel = mag <= dz ? 0 : MIN(1.5, (mag - dz) / MAX(0.0001, 1 - dz));   // 1.5 = dragged well past the rim
+    CGFloat ux = len > 0 ? dx / len : 0, uy = len > 0 ? dy / len : 0;              // unit direction
     CGFloat ax = ux * travel, ay = uy * travel;
 
     // Hysteresis: a direction engages at 0.18 of the travel and releases only below 0.12, so the stick starts moving with a
-    // light push (about a third of the radius) but a thumb resting near the middle cannot make you drift.
+    // light push but a thumb resting near the middle cannot make you drift.
     CGFloat on = 0.18, off = 0.12;
     [self set:ay < -(self.up ? off : on) key:self.keyUp flag:&_up];
     [self set:ay > (self.down ? off : on) key:self.keyDown flag:&_down];
     [self set:ax < -(self.left ? off : on) key:self.keyLeft flag:&_left];
     [self set:ax > (self.right ? off : on) key:self.keyRight flag:&_right];
 
-    // Full push holds Run (or Sprint) until the stick comes back a little, like a controller stick at the rim.
+    // First stage: Run (or Sprint, or any key) from pushAt on. Second stage: another key once pushed past the rim.
+    CGFloat at = MAX(0.3, MIN(1.5, self.pushAt));
     if (self.pushKey != 0) {
-        CGFloat at = MAX(0.5, MIN(1.0, self.pushAt));
         BOOL want = travel >= (self.pushing ? at - 0.12 : at);
         if (want != self.pushing) {
             self.pushing = want;
@@ -750,11 +862,21 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
             if (want) [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
         }
     }
+    CGFloat at2 = MAX(0.5, MIN(1.5, self.push2At));
+    if (self.pushKey2 != 0 && self.pushKey2 != self.pushKey && at2 > at + 0.05) {
+        BOOL want2 = travel >= (self.pushing2 ? at2 - 0.12 : at2);
+        if (want2 != self.pushing2) {
+            self.pushing2 = want2;
+            push_key(self.pushKey2, want2 ? GLFW_PRESS : GLFW_RELEASE);
+            if (want2) [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+        }
+    }
 }
 - (void)reset {
     [self set:NO key:self.keyUp flag:&_up]; [self set:NO key:self.keyLeft flag:&_left];
     [self set:NO key:self.keyDown flag:&_down]; [self set:NO key:self.keyRight flag:&_right];
     if (self.pushing) { self.pushing = NO; if (self.pushKey) push_key(self.pushKey, GLFW_RELEASE); }
+    if (self.pushing2) { self.pushing2 = NO; if (self.pushKey2) push_key(self.pushKey2, GLFW_RELEASE); }
     CGFloat r = self.bounds.size.width / 2;
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r, r); [CATransaction commit];
 }
@@ -1102,6 +1224,7 @@ static void fps_note_frame(void) {
         CGPoint norm = CGPointMake([it[@"x"] doubleValue], [it[@"y"] doubleValue]);
         if (norm.x == 0 && norm.y == 0) norm = CGPointMake(0.5, 0.5);
         NSString *label = [it[@"label"] isKindOfClass:NSString.class] ? it[@"label"] : @"";
+        NSString *icon = [it[@"icon"] isKindOfClass:NSString.class] ? it[@"icon"] : nil;
         int code = [it[@"code"] intValue];
         if ([kind isEqualToString:@"aimstick"]) {
             ZOAimStick *a = [[ZOAimStick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; a.tag = tag++; a.norm = norm; a.alpha = alpha;
@@ -1118,13 +1241,14 @@ static void fps_note_frame(void) {
                 s.code = [d[@"code"] respondsToSelector:@selector(intValue)] ? [d[@"code"] intValue] : 0;
                 s.label = [d[@"label"] isKindOfClass:NSString.class] ? d[@"label"] : @"";
                 s.target = [d[@"target"] isKindOfClass:NSString.class] ? d[@"target"] : nil;
+                s.icon = [d[@"icon"] isKindOfClass:NSString.class] ? d[@"icon"] : nil;
                 [sl addObject:s]; if (sl.count == 8) break;
             }
             r.slots = sl;
             r.tapSlot = [it[@"tapSlot"] respondsToSelector:@selector(intValue)] ? [it[@"tapSlot"] intValue] : -1;
             r.shape = [it[@"radialShape"] respondsToSelector:@selector(intValue)] ? MAX(0, MIN(3, [it[@"radialShape"] intValue])) : 0;
             r.spread = [it[@"radialSpread"] respondsToSelector:@selector(doubleValue)] ? MAX(0.6, MIN(1.6, [it[@"radialSpread"] doubleValue])) : 1.0;
-            [r setFaceText:label];
+            [r setFace:label icon:icon];
             if ([r holds:@"hide"]) radialHide = YES;
             if ([r holds:@"mode"]) radialMode = YES;
             [self addSubview:r]; [self.controls addObject:r]; continue;
@@ -1137,10 +1261,14 @@ static void fps_note_frame(void) {
         if ([kind isEqualToString:@"stick"]) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
             id dz = it[@"stickDead"], pk = it[@"stickPushKey"], pa = it[@"stickPushAt"], ks = it[@"stickArrows"];
+            id pk2 = it[@"stickPush2Key"], pa2 = it[@"stickPush2At"];
             j.deadZone = [dz respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(0.55, [dz doubleValue])) : 0.18;
-            j.pushKey = [pk respondsToSelector:@selector(intValue)] ? [pk intValue] : 340;      // Shift: run at full push
-            j.pushAt = [pa respondsToSelector:@selector(doubleValue)] ? MAX(0.5, MIN(1.0, [pa doubleValue])) : 0.85;
+            j.pushKey = [pk respondsToSelector:@selector(intValue)] ? [pk intValue] : 340;      // Shift: run from pushAt on
+            j.pushAt = [pa respondsToSelector:@selector(doubleValue)] ? MAX(0.3, MIN(1.5, [pa doubleValue])) : 0.85;
+            j.pushKey2 = [pk2 respondsToSelector:@selector(intValue)] ? [pk2 intValue] : 342;   // Alt: sprint past the rim
+            j.push2At = [pa2 respondsToSelector:@selector(doubleValue)] ? MAX(0.5, MIN(1.5, [pa2 doubleValue])) : 1.15;
             if ([ks respondsToSelector:@selector(boolValue)] && [ks boolValue]) { j.keyUp = 265; j.keyLeft = 263; j.keyDown = 264; j.keyRight = 262; }
+            [j updateRings];
             [self addSubview:j]; [self.controls addObject:j]; continue;
         }
         if ([kind isEqualToString:@"padstick"]) {
@@ -1158,6 +1286,7 @@ static void fps_note_frame(void) {
         if (k < 0) continue;
         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
         b.itemId = [it[@"id"] isKindOfClass:NSString.class] ? it[@"id"] : nil;
+        b.iconName = icon;
         if (k <= 1) {                                                          // key and mouse buttons only: the per-button two-thumb options
             id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"], ht = it[@"holdLockTime"];
             b.holdLockDelay = [ht respondsToSelector:@selector(doubleValue)] ? MAX(0.1, MIN(3.0, [ht doubleValue])) : 0.5;
@@ -1166,12 +1295,17 @@ static void fps_note_frame(void) {
             b.fireMode = [fm respondsToSelector:@selector(intValue)] ? MAX(0, MIN(2, [fm intValue])) : 0;
         }
         if (k == 7) b.targetId = [it[@"target"] isKindOfClass:NSString.class] ? it[@"target"] : nil;
+        [b refreshIcon];
         [self addSubview:b];
         if (k == 3) { self.hideButton = b; b.tag = 19; }
         else if (k == 4) { self.modeButton = b; b.tag = 20; }
         else [self.controls addObject:b];
     }
-    if (!self.hideButton && !radialHide) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
+    if (!self.hideButton && !radialHide) {      // never lose these two
+        self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44];
+        self.hideButton.iconName = @"eye.slash"; [self.hideButton refreshIcon];
+        self.hideButton.tag = 19; [self addSubview:self.hideButton];
+    }
     if (!self.modeButton && !radialMode) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
     [self updateFireToggles];
     glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
@@ -1233,9 +1367,12 @@ static void fps_note_frame(void) {
     for (size_t i = 0; i < sizeof defs / sizeof defs[0]; i++) {
         BOOL small = defs[i].tag >= 16;
         ZOButton *b = [ZOButton buttonWithTitle:[NSString stringWithUTF8String:defs[i].t] kind:defs[i].kind code:defs[i].code size:small ? 44 : 62];
+        b.iconName = default_icon_for_key(defs[i].code); [b refreshIcon];
         b.tag = defs[i].tag; [self addSubview:b]; [self.controls addObject:b];
     }
-    self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton];
+    self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44];
+    self.hideButton.iconName = @"eye.slash"; [self.hideButton refreshIcon];
+    self.hideButton.tag = 19; [self addSubview:self.hideButton];
     self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton];
     _padConnected = pad_any_connected(); [self updateControlVisibility];
     [self setNeedsLayout];

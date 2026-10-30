@@ -30,6 +30,10 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var stickPushKey: Int? = nil     // key held at full push: 340 run, 342 sprint, 0 never (nil = Shift)
     var stickPushAt: Double? = nil   // how far it must be pushed for that, 0.5...1.0 (nil = 0.85)
     var stickArrows: Bool? = nil     // send the arrow keys instead of WASD
+    var stickPush2Key: Int? = nil    // second stage at stickPush2At, meant for pushing past the rim (342 = sprint, nil = Alt)
+    var stickPush2At: Double? = nil  // 0.5...1.5; values over 1 need the thumb dragged past the stick's edge
+    /// SF Symbol drawn on the control instead of its text (nil = the overlay's default for that key, or text).
+    var icon: String? = nil
     static let defaultHoldLockTime = 0.5
     var locked: Bool { kind == .hide || kind == .mode }
     /// Half the width and height the control takes on screen (the scroll strip is a tall bar; everything else is round).
@@ -50,6 +54,7 @@ struct RadialSlot: Codable, Identifiable, Equatable {
     var code: Int = 0
     var label: String = ""
     var target: String? = nil        // firemode: the button it switches between Default and Release
+    var icon: String? = nil          // SF Symbol drawn on the option instead of its label
 }
 
 /// Where a radial menu's options go when it opens. Same maths as radial_layout() in the overlay
@@ -181,34 +186,56 @@ enum TouchLayoutStore {
         if let i = l.items.firstIndex(where: { $0.id == id }) { change(&l.items[i]) }
         return l
     }
-    /// The bar of small keys along the top edge: inventory, health, map and light on the left, and the overlay's own controls on the right.
-    private static let topBar: [(String, TouchItem.Kind, String, Int, Double, Double, Double)] = [
-        ("inv", .key, "INV", 73, 72, 30, 46), ("hp", .key, "HP", 72, 128, 30, 46),
-        ("map", .key, "MAP", 77, 184, 30, 46), ("lit", .key, "LIT", 70, 240, 30, 46),
-        ("mode", .mode, "PAD", 0, 296, 30, 46),
-        ("esc", .key, "ESC", 256, 924, 30, 46), ("hide", .hide, "HIDE", 0, 868, 30, 46),
-        ("kb", .keyboard, "KB", 0, 812, 30, 46), ("tab", .key, "TAB", 258, 756, 30, 46),
+    /// A radial menu control with its options, each already carrying its icon.
+    private static func radial(_ id: String, _ label: String, _ px: Double, _ py: Double,
+                               _ slots: [(RadialSlot.Kind, Int, String)]) -> TouchItem {
+        var r = TouchItem(id: id, kind: .radial, label: label, code: 0, x: px / 956.0, y: py / 440.0, size: 58)
+        r.slots = slots.map { s in
+            var slot = RadialSlot(kind: s.0, code: s.1, label: s.2)
+            slot.icon = ControlIcon.suggested(for: slot)
+            return slot
+        }
+        return r
+    }
+    /// Fills in the icon each control would naturally have, so presets look finished and a newly added button looks right.
+    private static func icons(_ layout: TouchLayout) -> TouchLayout {
+        var l = layout
+        for i in l.items.indices where l.items[i].icon == nil { l.items[i].icon = ControlIcon.suggested(for: l.items[i]) }
+        return l
+    }
+    private static let panelMenu: [(RadialSlot.Kind, Int, String)] = [
+        (.key, 73, "INV"), (.key, 72, "HP"), (.key, 77, "MAP"), (.key, 70, "LIT"),
+        (.key, 258, "TAB"), (.key, 256, "ESC"), (.keyboard, 0, "KB"), (.hide, 0, "HIDE"),
     ]
 
-    /// The default layout: thumb sticks in the bottom corners, attack and shove under the right thumb, aim, interact and run
-    /// in a reachable column, a scroll strip between them, and the common panels along the top edge.
+    /// The default layout. Sticks in the corners, attack and shove under the right thumb with drag-to-aim, aim that locks
+    /// on a long press, interact and run in a column, a scroll strip between them, a fire-mode toggle for attack, and one
+    /// radial holding the panels so the screen is not covered in small keys.
     static var defaultLayout: TouchLayout {
-        lay([
+        var l = lay([
             ("stick", .stick, "", 0, 98, 348, 140),
             ("aimstick", .aimstick, "", 0, 858, 348, 140),
             ("atk", .mouse, "ATK", 0, 716, 348, 78),
             ("shv", .key, "SHV", 32, 716, 256, 62),          // Space: unarmed shove / stomp
-            ("aim", .mouse, "AIM", 1, 622, 388, 58),         // right mouse: aim stance
-            ("e", .key, "E", 69, 626, 318, 58),              // interact
-            ("run", .key, "RUN", 340, 626, 242, 54),         // left Shift: run
-            ("crch", .key, "CRCH", 67, 98, 232, 56),         // C: sneak / crouch
-            ("scroll", .scroll, "", 0, 500, 340, 64),
-        ] + topBar)
+            ("aim", .mouse, "AIM", 1, 622, 392, 58),         // right mouse: aim stance
+            ("e", .key, "E", 69, 626, 320, 58),              // interact
+            ("run", .key, "RUN", 340, 626, 246, 54),         // left Shift: run
+            ("crch", .key, "CRCH", 67, 98, 236, 56),         // C: sneak / crouch
+            ("scroll", .scroll, "", 0, 500, 342, 64),
+            ("fmode", .firemode, "MODE", 0, 770, 256, 46),   // switches the attack button between Default and Release
+        ])
+        l.items.append(radial("menu", "MENU", 392, 120, panelMenu))
+        l = with(l, "atk") { $0.dragAim = true }
+        l = with(l, "shv") { $0.dragAim = true }
+        l = with(l, "aim") { $0.holdLock = true }
+        l = with(l, "fmode") { $0.target = "atk" }
+        return icons(l)
     }
 
-    /// Claw: both thumbs on sticks, with attack and shove where an index finger reaching over the right thumb can hit them.
+    /// Claw: both thumbs on sticks, attack and shove under an index finger reaching over the right thumb. Attack is in
+    /// Release mode, so holding it aims (with drag-to-aim) and lifting swings once.
     static var clawLayout: TouchLayout {
-        with(lay([
+        var l = lay([
             ("stick", .stick, "", 0, 98, 352, 140),
             ("aimstick", .aimstick, "", 0, 860, 352, 140),
             ("atk", .mouse, "ATK", 0, 860, 212, 84),
@@ -217,12 +244,17 @@ enum TouchLayoutStore {
             ("e", .key, "E", 69, 700, 350, 60),
             ("crch", .key, "CRCH", 67, 700, 250, 56),
             ("scroll", .scroll, "", 0, 560, 340, 62),
-        ] + topBar), "atk") { $0.dragAim = true }
+        ])
+        l.items.append(radial("menu", "MENU", 392, 120, panelMenu))
+        l = with(l, "atk") { $0.dragAim = true; $0.fireMode = 2 }
+        l = with(l, "shv") { $0.dragAim = true }
+        l = with(l, "aim") { $0.holdLock = true }
+        return icons(l)
     }
 
     /// Claw V: claws with the action buttons in a V, so the index finger can slide between attack, shove and interact.
     static var clawVLayout: TouchLayout {
-        with(lay([
+        var l = lay([
             ("stick", .stick, "", 0, 98, 352, 140),
             ("aimstick", .aimstick, "", 0, 870, 352, 140),
             ("atk", .mouse, "ATK", 0, 862, 210, 80),
@@ -231,12 +263,18 @@ enum TouchLayoutStore {
             ("aim", .mouse, "AIM", 1, 724, 218, 56),
             ("crch", .key, "CRCH", 67, 700, 320, 54),
             ("scroll", .scroll, "", 0, 560, 320, 60),
-        ] + topBar), "atk") { $0.dragAim = true; $0.fireMode = 2 }
+        ])
+        l.items.append(radial("menu", "MENU", 392, 120, panelMenu))
+        l = with(l, "atk") { $0.dragAim = true; $0.fireMode = 2 }
+        l = with(l, "shv") { $0.dragAim = true }
+        l = with(l, "aim") { $0.holdLock = true }
+        return icons(l)
     }
 
-    /// Pro: everything a normal session needs, including reload and rack, without a menu.
+    /// Pro: everything a normal session needs, including reload, rack and a fire-mode toggle, still without a menu of
+    /// buttons: the panels live in one radial.
     static var proLayout: TouchLayout {
-        with(lay([
+        var l = lay([
             ("stick", .stick, "", 0, 98, 350, 148),
             ("aimstick", .aimstick, "", 0, 862, 350, 148),
             ("atk", .mouse, "ATK", 0, 714, 348, 80),
@@ -248,49 +286,83 @@ enum TouchLayoutStore {
             ("reload", .key, "R", 82, 444, 396, 56),        // reload weapon
             ("rack", .key, "X", 88, 444, 322, 56),          // rack a firearm
             ("scroll", .scroll, "", 0, 520, 330, 64),
-        ] + topBar), "atk") { $0.dragAim = true; $0.holdLock = true }
+            ("fmode", .firemode, "MODE", 0, 776, 250, 46),
+        ])
+        l.items.append(radial("menu", "MENU", 392, 120, panelMenu))
+        l = with(l, "atk") { $0.dragAim = true; $0.holdLock = true }
+        l = with(l, "shv") { $0.dragAim = true }
+        l = with(l, "aim") { $0.holdLock = true }
+        l = with(l, "fmode") { $0.target = "atk" }
+        return icons(l)
     }
 
-    /// Max: every control that matters, with the less frequent ones gathered into two radial menus (panels and vehicle).
+    /// Max: every control that matters. The less frequent ones sit in three radial menus (panels, vehicle, time), and the
+    /// weapon hotbar lives along the top edge.
     static var maxLayout: TouchLayout {
         var l = proLayout
-        func radial(_ id: String, _ label: String, _ px: Double, _ py: Double, _ slots: [(RadialSlot.Kind, Int, String, String?)]) -> TouchItem {
-            var r = TouchItem(id: id, kind: .radial, label: label, code: 0, x: px / 956.0, y: py / 440.0, size: 58)
-            r.slots = slots.map { RadialSlot(kind: $0.0, code: $0.1, label: $0.2, target: $0.3) }
-            return r
+        l.items.removeAll { $0.id == "menu" }                       // replaced by the three radials below
+        l.items.append(radial("panels", "PANEL", 392, 120, [
+            (.key, 73, "INV"), (.key, 72, "HP"), (.key, 74, "INFO"), (.key, 76, "SKILL"),
+            (.key, 80, "PROT"), (.key, 66, "CRAFT"), (.key, 77, "MAP"), (.hide, 0, "HIDE"),
+        ]))
+        l.items.append(radial("vehicle", "VEH", 302, 112, [
+            (.key, 86, "VEH"), (.key, 70, "LIGHTS"), (.key, 78, "ENGINE"), (.key, 79, "HEATER"),
+            (.key, 85, "INFO"), (.key, 90, "SEAT"), (.key, 81, "HORN"),
+        ]))
+        l.items.append(radial("time", "TIME", 482, 112, [
+            (.key, 291, "PAUSE"), (.key, 292, "PLAY"), (.key, 293, "FF1"), (.key, 294, "FF2"), (.key, 295, "FF3"),
+        ]))
+        for h in [("hb1", "1", 49, 620.0), ("hb2", "2", 50, 672.0), ("hb3", "3", 51, 724.0),
+                  ("hb4", "4", 52, 776.0), ("hb5", "5", 53, 828.0)] {
+            l.items.append(TouchItem(id: h.0, kind: .key, label: h.1, code: h.2, x: h.3 / 956.0, y: 36 / 440.0, size: 46))
         }
-        l.items.append(radial("panels", "PANEL", 320, 130, [
-            (.key, 73, "INV", nil), (.key, 72, "HP", nil), (.key, 74, "INFO", nil), (.key, 76, "SKILL", nil),
-            (.key, 80, "PROT", nil), (.key, 66, "CRAFT", nil), (.key, 77, "MAP", nil), (.key, 71, "PVP", nil),
-        ]))
-        l.items.append(radial("vehicle", "VEH", 400, 130, [
-            (.key, 86, "VEH", nil), (.key, 70, "LIGHTS", nil), (.key, 78, "ENGINE", nil), (.key, 79, "HEATER", nil),
-            (.key, 85, "INFO", nil), (.key, 90, "SEAT", nil), (.key, 81, "HORN", nil),
-        ]))
-        l.items.append(contentsOf: [
-            TouchItem(id: "hb1", kind: .key, label: "1", code: 49, x: 360 / 956.0, y: 30 / 440.0, size: 46),
-            TouchItem(id: "hb2", kind: .key, label: "2", code: 50, x: 416 / 956.0, y: 30 / 440.0, size: 46),
-            TouchItem(id: "hb3", kind: .key, label: "3", code: 51, x: 472 / 956.0, y: 30 / 440.0, size: 46),
-        ])
-        return l
+        return icons(l)
     }
 
     /// Minimal: the four things a survivor needs moment to moment, and a way back to the rest of the controls.
     static var minimalLayout: TouchLayout {
-        with(lay([
+        var l = lay([
             ("stick", .stick, "", 0, 104, 340, 152),
             ("aimstick", .aimstick, "", 0, 852, 340, 152),
             ("atk", .mouse, "ATK", 0, 700, 330, 86),
             ("aim", .mouse, "AIM", 1, 604, 388, 62),
             ("e", .key, "E", 69, 604, 290, 58),
             ("hide", .hide, "HIDE", 0, 916, 32, 46),
-        ]), "atk") { $0.dragAim = true }
+        ])
+        l = with(l, "atk") { $0.dragAim = true }
+        l = with(l, "aim") { $0.holdLock = true }
+        return icons(l)
+    }
+
+    /// Driving: the movement stick (which drives the car) and the handful of keys a vehicle needs, with the vehicle and
+    /// panel menus as radials, so a car can be driven and left without switching layouts.
+    static var drivingLayout: TouchLayout {
+        var l = lay([
+            ("stick", .stick, "", 0, 108, 344, 152),
+            ("brake", .key, "BRK", 32, 700, 344, 76),        // Space: handbrake
+            ("exit", .key, "EXIT", 69, 700, 244, 62),        // E: enter / exit
+            ("horn", .key, "HORN", 81, 608, 392, 58),
+            ("engine", .key, "ENG", 78, 608, 318, 58),
+            ("lights", .key, "LIT", 70, 608, 244, 58),
+            ("seat", .key, "SEAT", 90, 800, 244, 56),
+        ])
+        l.items.append(radial("vehicle", "VEH", 392, 112, [
+            (.key, 86, "VEH"), (.key, 70, "LIGHTS"), (.key, 78, "ENGINE"), (.key, 79, "HEATER"),
+            (.key, 85, "INFO"), (.key, 90, "SEAT"), (.key, 81, "HORN"),
+        ]))
+        l.items.append(radial("menu", "MENU", 482, 112, [
+            (.key, 73, "INV"), (.key, 77, "MAP"), (.key, 72, "HP"), (.key, 256, "ESC"),
+            (.keyboard, 0, "KB"), (.hide, 0, "HIDE"),
+        ]))
+        l = with(l, "brake") { $0.holdLock = true }          // parking brake: tap once, it stays on
+        return icons(l)
     }
 
     /// The layouts the editor offers as starting points, tuned for different ways of holding the device.
     static var builtInPresets: [TouchPreset] {
         [("default", "Default (improved)", defaultLayout), ("claw", "Claw", clawLayout), ("clawv", "Claw V", clawVLayout),
-         ("pro", "Pro", proLayout), ("max", "Max", maxLayout), ("minimal", "Minimal", minimalLayout)]
+         ("pro", "Pro", proLayout), ("max", "Max", maxLayout), ("driving", "Driving", drivingLayout),
+         ("minimal", "Minimal", minimalLayout)]
             .map { TouchPreset(id: "builtin." + $0.0, name: $0.1, layout: $0.2) }
     }
 
@@ -391,6 +463,126 @@ enum PadCatalog {
     }
 }
 
+/// SF Symbols for the on-screen controls. The overlay loads them by name and falls back to the control's text when a
+/// symbol is missing, so this list never leaves a button blank.
+enum ControlIcon {
+    struct Entry: Identifiable, Hashable {
+        let symbol: String
+        let name: String
+        var id: String { symbol }
+    }
+    static let groups: [(String, [Entry])] = [
+        ("Actions", [
+            Entry(symbol: "hand.point.up.left.fill", name: "Attack"),
+            Entry(symbol: "scope", name: "Aim"),
+            Entry(symbol: "bolt.fill", name: "Shove"),
+            Entry(symbol: "hand.tap.fill", name: "Interact"),
+            Entry(symbol: "figure.run", name: "Run"),
+            Entry(symbol: "figure.walk", name: "Crouch"),
+            Entry(symbol: "arrow.counterclockwise", name: "Reload"),
+            Entry(symbol: "arrow.up.forward", name: "Rack"),
+        ]),
+        ("Panels", [
+            Entry(symbol: "bag.fill", name: "Inventory"),
+            Entry(symbol: "heart.fill", name: "Health"),
+            Entry(symbol: "map.fill", name: "Map"),
+            Entry(symbol: "book.fill", name: "Info"),
+            Entry(symbol: "shield.fill", name: "Protection"),
+            Entry(symbol: "hammer.fill", name: "Crafting"),
+            Entry(symbol: "cross.case.fill", name: "First aid"),
+            Entry(symbol: "lightbulb.fill", name: "Light"),
+            Entry(symbol: "bubble.left.fill", name: "Chat"),
+            Entry(symbol: "person.fill", name: "Character"),
+        ]),
+        ("Vehicle", [
+            Entry(symbol: "car.fill", name: "Vehicle"),
+            Entry(symbol: "engine.combustion", name: "Engine"),
+            Entry(symbol: "thermometer.medium", name: "Heater"),
+            Entry(symbol: "sun.max.fill", name: "Headlights"),
+            Entry(symbol: "speaker.wave.2.fill", name: "Horn"),
+            Entry(symbol: "chair.fill", name: "Seat"),
+        ]),
+        ("Menu", [
+            Entry(symbol: "escape", name: "Escape"),
+            Entry(symbol: "rectangle.on.rectangle", name: "Tab"),
+            Entry(symbol: "keyboard", name: "Keyboard"),
+            Entry(symbol: "return", name: "Enter"),
+            Entry(symbol: "eye.slash", name: "Hide"),
+            Entry(symbol: "menucard.fill", name: "Radial menu"),
+            Entry(symbol: "plus", name: "Plus"),
+            Entry(symbol: "minus", name: "Minus"),
+            Entry(symbol: "magnifyingglass", name: "Search"),
+            Entry(symbol: "gear", name: "Settings"),
+        ]),
+        ("Time", [
+            Entry(symbol: "pause.fill", name: "Pause"),
+            Entry(symbol: "play.fill", name: "Play"),
+            Entry(symbol: "forward.fill", name: "Fast forward"),
+            Entry(symbol: "hourglass", name: "Wait"),
+        ]),
+    ]
+    static var all: [Entry] { groups.flatMap { $0.1 } }
+    static func name(_ symbol: String?) -> String {
+        guard let symbol, !symbol.isEmpty else { return "Text only" }
+        return all.first { $0.symbol == symbol }?.name ?? symbol
+    }
+    /// Keyboard codes to symbols, shared with the overlay's defaults so a control looks the same before and after a save.
+    static func suggested(forKey key: Int) -> String? {
+        switch key {
+        case 69: return "hand.tap.fill"            // E interact
+        case 340: return "figure.run"              // Shift run
+        case 341: return "scope"                   // Ctrl aim
+        case 32: return "bolt.fill"                // Space shove
+        case 67: return "figure.walk"              // C crouch
+        case 73: return "bag.fill"                 // I inventory
+        case 72: return "heart.fill"               // H health
+        case 77: return "map.fill"                 // M map
+        case 70: return "lightbulb.fill"           // F light
+        case 82: return "arrow.counterclockwise"   // R reload
+        case 88: return "arrow.up.forward"         // X rack
+        case 256: return "escape"
+        case 258: return "rectangle.on.rectangle"  // Tab
+        case 257: return "return"
+        case 86: return "car.fill"                 // V vehicle menu
+        case 78: return "engine.combustion"        // N engine
+        case 79: return "thermometer.medium"       // O heater
+        case 90: return "chair.fill"               // Z seat
+        case 81: return "speaker.wave.2.fill"      // Q horn
+        case 84: return "bubble.left.fill"         // T chat
+        case 71: return "shield.fill"              // G safety
+        case 74: return "book.fill"                // J info
+        case 76: return "book.fill"                // L skills
+        case 80: return "shield.fill"              // P protection
+        case 66: return "hammer.fill"              // B crafting
+        case 291: return "pause.fill"              // F2 pause
+        case 292: return "play.fill"               // F3 play
+        case 293, 294, 295: return "forward.fill"  // F4-F6 fast forward
+        default: return nil
+        }
+    }
+    /// The icon a control gets by default, so a new button already looks right; nil means text.
+    static func suggested(for item: TouchItem) -> String? {
+        switch item.kind {
+        case .mouse: return item.code == 1 ? "scope" : "hand.point.up.left.fill"
+        case .keyboard: return "keyboard"
+        case .hide: return "eye.slash"
+        case .radial: return "menucard.fill"
+        case .key: return suggested(forKey: item.code)
+        default: return nil                                // sticks, scroll, PAD/TCH, fire mode: text or their own look
+        }
+    }
+    /// Icons for a radial option, following whatever it sends.
+    static func suggested(for slot: RadialSlot) -> String? {
+        switch slot.kind {
+        case .key: return suggested(forKey: slot.code)
+        case .mouse: return slot.code == 1 ? "scope" : "hand.point.up.left.fill"
+        case .keyboard: return "keyboard"
+        case .hide: return "eye.slash"
+        default: return nil
+        }
+    }
+}
+
 // MARK: - Touch layout editor
 
 struct TouchLayoutEditor: View {
@@ -410,6 +602,7 @@ struct TouchLayoutEditor: View {
     @AppStorage("zom.scrollSens") private var scrollSens = 1.0     // extra multiplier on the scroll strip's speed
     @AppStorage("zom.scrollMomentum") private var scrollMomentum = false   // keep scrolling for a moment after a flick
     @AppStorage("zom.uiMargin") private var uiMargin = 2            // the game's UI Margins setting, drawn as a guide
+    @AppStorage("zom.touchIcons") private var iconsOn = true        // draw SF Symbols on the controls instead of their text
     @State private var showGuides = true
     @State private var guideSafe = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)     // safe area, as fractions of the screen
     @State private var guideMargin = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)   // the game's UI margins, as fractions of the screen
@@ -436,7 +629,7 @@ struct TouchLayoutEditor: View {
 
                 ForEach($layout.items) { $item in
                     // gesture goes on before .position, so each control's touch area is the control itself, not the whole screen
-                    Chip(item: $item, selected: selected == item.id, opacity: max(layout.opacity, 0.22))
+                    Chip(item: $item, selected: selected == item.id, opacity: max(layout.opacity, 0.22), iconsOn: iconsOn)
                         .contentShape(Capsule())      // a circle for round controls, the whole bar for the scroll strip
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas")).onChanged { v in
                             if selected != item.id { selected = item.id }
@@ -676,6 +869,7 @@ struct TouchLayoutEditor: View {
                             .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                     }
                     toggleRow("Show guides", $showGuides)
+                    toggleRow("Icons on buttons", $iconsOn)
                 }
 
                 if !pad {
@@ -790,6 +984,9 @@ struct TouchLayoutEditor: View {
         let item = layout.items[i]
         VStack(alignment: .leading, spacing: M.gap) {
             sectionTitle(itemTitle(item))
+            if item.kind != .stick && item.kind != .aimstick && item.kind != .scroll && item.kind != .padstick && item.kind != .mode {
+                iconRow(i)
+            }
             if item.kind == .padbtn || item.kind == .padtrig {
                 row("Acts as") {
                     Menu {
@@ -834,10 +1031,31 @@ struct TouchLayoutEditor: View {
                     row("Push at", value: String(format: "%.0f%%", (item.stickPushAt ?? 0.85) * 100)) {
                         Slider(value: Binding(get: { layout.items[i].stickPushAt ?? 0.85 },
                                               set: { v in layout.items[i].stickPushAt = abs(v - 0.85) < 0.005 ? nil : v }),
-                               in: 0.6...1.0, step: 0.01).tint(.white)
+                               in: 0.3...1.5, step: 0.01).tint(.white)
                     }
                 }
-                Text("Sends the keyboard's own keys, but with a dead zone so a resting thumb does not move you, and a Run or Sprint key at full push, like a controller stick held to the rim.")
+                row("Past the rim") {
+                    Menu {
+                        Button("Off") { layout.items[i].stickPush2Key = 0 }
+                        Button("Sprint (Alt)") { layout.items[i].stickPush2Key = nil }
+                        Button("Run (Shift)") { layout.items[i].stickPush2Key = 340 }
+                        Menu("Another key") {
+                            ForEach(KeyCatalog.groups, id: \.0) { group in
+                                Menu(group.0) {
+                                    ForEach(group.1, id: \.1) { key in Button(key.0) { layout.items[i].stickPush2Key = key.1 } }
+                                }
+                            }
+                        }
+                    } label: { field { Text(stage2Name(layout.items[i].stickPush2Key)) } }
+                }
+                if (layout.items[i].stickPush2Key ?? 342) != 0 {
+                    row("Sprint at", value: String(format: "%.0f%%", (item.stickPush2At ?? 1.15) * 100)) {
+                        Slider(value: Binding(get: { layout.items[i].stickPush2At ?? 1.15 },
+                                              set: { v in layout.items[i].stickPush2At = abs(v - 1.15) < 0.005 ? nil : v }),
+                               in: 0.6...1.5, step: 0.01).tint(.white)
+                    }
+                }
+                Text("Sends the keyboard's own keys, with a dead zone so a resting thumb does not move you. Push past the first mark to Run, and drag beyond the stick's edge (over 100%) to Sprint at the second; both marks are drawn on the stick.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
@@ -927,6 +1145,37 @@ struct TouchLayoutEditor: View {
         }
     }
 
+    /// The icon the control draws instead of its text. "Text only" clears it; a name the running iOS does not have falls
+    /// back to the text, so nothing can end up blank.
+    @ViewBuilder private func iconRow(_ i: Int) -> some View {
+        let item = layout.items[i]
+        row("Icon") {
+            Menu {
+                Button("Text only") { layout.items[i].icon = nil }
+                if let s = ControlIcon.suggested(for: item) {
+                    Button("Suggested") { layout.items[i].icon = s }
+                }
+                Divider()
+                ForEach(ControlIcon.groups, id: \.0) { group in
+                    Menu(group.0) {
+                        ForEach(group.1) { e in
+                            Button { layout.items[i].icon = e.symbol } label: { Label(e.name, systemImage: e.symbol) }
+                        }
+                    }
+                }
+            } label: {
+                field {
+                    HStack(spacing: 6) {
+                        if let icon = layout.items[i].icon, !icon.isEmpty {
+                            Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+                        }
+                        Text(ControlIcon.name(layout.items[i].icon)).lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
     private func itemTitle(_ item: TouchItem) -> String {
         switch item.kind {
         case .stick: return "Joystick"
@@ -1005,22 +1254,22 @@ struct TouchLayoutEditor: View {
             ForEach(KeyCatalog.groups, id: \.0) { group in
                 Menu(group.0) {
                     ForEach(group.1, id: \.1) { e in
-                        Button(e.0) { editSlot(i, n) { $0.kind = .key; $0.code = e.1; $0.target = nil; $0.label = KeyCatalog.shortLabel(key: e.1) } }
+                        Button(e.0) { editSlot(i, n) { $0.kind = .key; $0.code = e.1; $0.target = nil; $0.label = KeyCatalog.shortLabel(key: e.1); $0.icon = ControlIcon.suggested(for: $0) } }
                     }
                 }
             }
             Menu("Mouse") {
                 ForEach(KeyCatalog.mouse, id: \.1) { e in
-                    Button(e.0) { editSlot(i, n) { $0.kind = .mouse; $0.code = e.1; $0.target = nil; $0.label = e.0.prefix(1).uppercased() + "CLK" } }
+                    Button(e.0) { editSlot(i, n) { $0.kind = .mouse; $0.code = e.1; $0.target = nil; $0.label = e.0.prefix(1).uppercased() + "CLK"; $0.icon = ControlIcon.suggested(for: $0) } }
                 }
             }
             Menu("Controls") {
-                Button("Hide / show controls") { editSlot(i, n) { $0.kind = .hide; $0.target = nil; $0.label = "HIDE" } }
-                Button("PAD / TCH mode") { editSlot(i, n) { $0.kind = .mode; $0.target = nil; $0.label = "PAD" } }
-                Button("Keyboard") { editSlot(i, n) { $0.kind = .keyboard; $0.target = nil; $0.label = "KB" } }
+                Button("Hide / show controls") { editSlot(i, n) { $0.kind = .hide; $0.target = nil; $0.label = "HIDE"; $0.icon = "eye.slash" } }
+                Button("PAD / TCH mode") { editSlot(i, n) { $0.kind = .mode; $0.target = nil; $0.label = "PAD"; $0.icon = nil } }
+                Button("Keyboard") { editSlot(i, n) { $0.kind = .keyboard; $0.target = nil; $0.label = "KB"; $0.icon = "keyboard" } }
                 Menu("Fire mode toggle for") {
                     ForEach(layout.items.filter { $0.kind == .key || $0.kind == .mouse }) { b in
-                        Button(buttonName(b)) { editSlot(i, n) { $0.kind = .firemode; $0.target = b.id; $0.label = "MODE" } }
+                        Button(buttonName(b)) { editSlot(i, n) { $0.kind = .firemode; $0.target = b.id; $0.label = "MODE"; $0.icon = nil } }
                     }
                 }
             }
@@ -1054,10 +1303,10 @@ struct TouchLayoutEditor: View {
     }
     private func slotFrom(_ b: TouchItem, id: String) -> RadialSlot {
         switch b.kind {
-        case .key: return RadialSlot(id: id, kind: .key, code: b.code, label: b.label)
-        case .mouse: return RadialSlot(id: id, kind: .mouse, code: b.code, label: b.label)
-        case .keyboard: return RadialSlot(id: id, kind: .keyboard, label: b.label.isEmpty ? "KB" : b.label)
-        case .hide: return RadialSlot(id: id, kind: .hide, label: "HIDE")
+        case .key: return RadialSlot(id: id, kind: .key, code: b.code, label: b.label, icon: b.icon ?? ControlIcon.suggested(forKey: b.code))
+        case .mouse: return RadialSlot(id: id, kind: .mouse, code: b.code, label: b.label, icon: b.icon ?? (b.code == 1 ? "scope" : "hand.point.up.left.fill"))
+        case .keyboard: return RadialSlot(id: id, kind: .keyboard, label: b.label.isEmpty ? "KB" : b.label, icon: "keyboard")
+        case .hide: return RadialSlot(id: id, kind: .hide, label: "HIDE", icon: "eye.slash")
         case .mode: return RadialSlot(id: id, kind: .mode, label: "PAD")
         case .firemode: return RadialSlot(id: id, kind: .firemode, label: "MODE", target: b.target)
         default: return RadialSlot(id: id)
@@ -1088,6 +1337,9 @@ struct TouchLayoutEditor: View {
 
     private func setOutput(_ i: Int, kind: TouchItem.Kind, code: Int, label: String) {
         layout.items[i].kind = kind; layout.items[i].code = code; layout.items[i].label = String(label.prefix(5))
+        layout.items[i].icon = kind == .mouse
+            ? (code == 1 ? "scope" : "hand.point.up.left.fill")
+            : ControlIcon.suggested(forKey: code)
     }
 
     /// "HIT (A)" style name of a button, for the fire mode toggle's target picker.
@@ -1107,8 +1359,20 @@ struct TouchLayoutEditor: View {
         }
     }
 
+    /// Name of the second-stage key (pushed past the rim); nil means Sprint (Alt).
+    private func stage2Name(_ key: Int?) -> String {
+        switch key {
+        case .none: return "Sprint (Alt)"
+        case .some(0): return "Off"
+        case .some(340): return "Run (Shift)"
+        case .some(342): return "Sprint (Alt)"
+        case .some(let k): return KeyCatalog.name(key: k)
+        }
+    }
+
     private func add(_ kind: TouchItem.Kind, label: String, code: Int, size: Double = 62) {
-        let item = TouchItem(id: UUID().uuidString, kind: kind, label: label, code: code, x: 0.5, y: 0.78, size: size)
+        var item = TouchItem(id: UUID().uuidString, kind: kind, label: label, code: code, x: 0.5, y: 0.78, size: size)
+        item.icon = ControlIcon.suggested(for: item)
         layout.items.append(item); selected = item.id
     }
 
@@ -1128,6 +1392,7 @@ private struct Chip: View {
     @Binding var item: TouchItem
     let selected: Bool
     let opacity: Double
+    let iconsOn: Bool
     var body: some View {
         if item.kind == .scroll {
             ZStack {
@@ -1152,20 +1417,29 @@ private struct Chip: View {
                 Circle().fill(item.kind == .aimstick ? Color(red: 1, green: 0.6, blue: 0.55).opacity(0.6) : Color.white.opacity(0.55)).frame(width: item.size * 0.38, height: item.size * 0.38)
                 if item.kind == .aimstick { Image(systemName: "scope").font(.system(size: item.size * 0.2)).foregroundStyle(.white.opacity(0.8)) }
             } else {
-                if item.kind == .radial && item.label.isEmpty {
+                if item.kind == .radial && item.label.isEmpty && !(iconsOn && !(item.icon ?? "").isEmpty) {
                     Image(systemName: "circle.hexagongrid.fill").font(.system(size: item.size * 0.34, weight: .semibold)).foregroundStyle(.white)
+                } else if iconsOn, let icon = item.icon, !icon.isEmpty, item.kind != .mode, item.kind != .firemode {
+                    Image(systemName: icon)
+                        .font(.system(size: item.size * 0.36, weight: .semibold))
+                        .foregroundStyle(.white)
                 } else {
                     Text(item.label).font(.system(size: item.size > 50 ? 15 : 12, weight: .bold)).foregroundStyle(.white)
                         .minimumScaleFactor(0.45).lineLimit(1).padding(.horizontal, 4)
                 }
             }
-            if item.kind == .stick {          // drawn over the thumb: where the dead zone ends, and where Run/Sprint starts
+            if item.kind == .stick {          // drawn over the thumb: dead zone, Run point and the Sprint point past the rim
                 Circle().stroke(Color.white.opacity(0.35), lineWidth: 1)
                     .frame(width: item.size * max(0.05, min(0.6, item.stickDead ?? 0.18)))
                 if (item.stickPushKey ?? 340) != 0 {
                     Circle().stroke(Color(red: 1, green: 0.72, blue: 0.35).opacity(0.55),
                                     style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                        .frame(width: item.size * max(0.5, min(1.0, item.stickPushAt ?? 0.85)))
+                        .frame(width: item.size * max(0.3, min(1.5, item.stickPushAt ?? 0.85)))
+                }
+                if (item.stickPush2Key ?? 342) != 0 {
+                    Circle().stroke(Color(red: 1, green: 0.5, blue: 0.35).opacity(0.6),
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [2, 4]))
+                        .frame(width: item.size * max(0.6, min(1.5, item.stickPush2At ?? 1.15)))
                 }
             }
         }
