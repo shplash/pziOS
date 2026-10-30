@@ -72,5 +72,3 @@ result is the `pziOS-ipa` artifact. It runs on the standard macOS runner and nee
 
 `scripts/make-ipa.sh` remains the way to build a complete IPA from your own binaries (steps 1-5) on a Mac; the
 workflow above is the shortcut for testing launcher and overlay changes only.
-
-`docs/FEATURES.md` lists what the app can do, and what is still open.
