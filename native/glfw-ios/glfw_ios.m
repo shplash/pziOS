@@ -261,6 +261,21 @@ static void vpad_set_stick_raw(float x, float y) {
     g_vpadAxes[0] = MAX(-1.0f, MIN(1.0f, x));
     g_vpadAxes[1] = MAX(-1.0f, MIN(1.0f, y));
 }
+/// One-shot log: the first time the game asks for the virtual pad's state. If this never appears in a log, Project
+/// Zomboid never polled the pad at all, which is a different problem from the axes being ignored.
+static void vpad_note_read(void) {
+    static BOOL logged;
+    if (logged) return;
+    logged = YES;
+    glfwi_log("virtual pad: the game read joystick slot %d (controller support is on)", VPAD_SLOT);
+}
+/// One-shot log of the first analog vector, so a log can tell whether the movement stick reached the pad.
+static void vpad_note_analog(float x, float y) {
+    static BOOL logged;
+    if (logged) return;
+    logged = YES;
+    glfwi_log("analog movement: sending left stick %.2f, %.2f to the game", x, y);
+}
 
 // Icons for the on-screen controls. The touch editor writes an "icon" name (an SF Symbol) for each control and each
 // radial option, and "zom.touchIcons" switches them on or off. A name the running iOS does not have simply falls back to
@@ -929,7 +944,10 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGFloat mag = r > 0 ? len / r : 0;                                       // keeps counting past the rim, up to ~1.5+
     CGFloat vis = (len > r && len > 0) ? r / len : 1;                        // the thumb itself stays on the rim
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    self.thumb.position = CGPointMake(o.x + dx * vis, o.y + dy * vis);
+    CGFloat size = self.bounds.size.width;
+    CGPoint tp = CGPointMake(o.x + dx * vis, o.y + dy * vis);
+    tp.x = MAX(8, MIN(size - 8, tp.x)); tp.y = MAX(8, MIN(size - 8, tp.y));   // the thumb stays within the control
+    self.thumb.position = tp;
     self.originRing.position = o;
     self.deadRing.position = o; self.pushRing.position = o; self.push2Ring.position = o;
     [CATransaction commit];
@@ -954,18 +972,30 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         while (units - self.sector > 0.5 + h) self.sector++;
         while (units - self.sector < -0.5 - h) self.sector--;
     }
+    int sec = self.sector < 0 ? -1 : ((self.sector % 8) + 8) % 8;   // 0 right, 2 down, 4 left, 6 up
 
-    if (self.sector < 0) {
+    if (self.padStick) {
+        // Analog engine: the game gets a controller's left stick, with a speed that follows how far it is pushed, sent
+        // from the first bit of travel. The direction keys are still sent as a safety net, so walking works even if the
+        // game has not taken the controller (controller support off, or this build does not map it); in controller mode
+        // the game ignores them.
+        if (sec < 0) {
+            [self setUp:NO right:NO down:NO left:NO];
+        } else {
+            [self setUp:(sec >= 5) right:(sec == 7 || sec == 0 || sec == 1)
+                   down:(sec >= 1 && sec <= 3) left:(sec >= 3 && sec <= 5)];
+        }
+        if (travel > 0.02) {
+            float m = (float)MIN(1.0, travel);
+            float ax = (float)ux * m, ay = (float)uy * m;
+            vpad_set_stick_raw(ax, ay);
+            vpad_note_analog(ax, ay);
+        } else {
+            vpad_set_stick_raw(0, 0);
+        }
+    } else if (sec < 0) {
         [self setUp:NO right:NO down:NO left:NO];
-        if (self.padStick) vpad_set_stick_raw(0, 0);
-    } else if (self.padStick) {
-        // Analog engine: the game gets a controller's left stick, with a speed that follows how far it is pushed. No
-        // keyboard keys at all, so Project Zomboid cannot see the two devices fighting each other.
-        [self setUp:NO right:NO down:NO left:NO];
-        float m = (float)MIN(1.0, travel);
-        vpad_set_stick_raw((float)ux * m, (float)uy * m);
     } else {
-        int sec = ((self.sector % 8) + 8) % 8;             // 0 right, 2 down, 4 left, 6 up
         [self setUp:(sec >= 5) right:(sec == 7 || sec == 0 || sec == 1)
                down:(sec >= 1 && sec <= 3) left:(sec >= 3 && sec <= 5)];
     }
@@ -2205,7 +2235,7 @@ static char g_padGuid[GLFW_JOYSTICK_LAST + 1][33]; static char g_padName[GLFW_JO
 
 GLFW_API int glfwJoystickPresent(int j) { if (j == VPAD_SLOT) return vpad_present(); return pad_for(j) != nil; }
 GLFW_API const float *glfwGetJoystickAxes(int j, int *c) {
-    if (j == VPAD_SLOT) { if (c) *c = vpad_present() ? 6 : 0; return vpad_present() ? g_vpadAxes : NULL; }
+    if (j == VPAD_SLOT) { vpad_note_read(); if (c) *c = vpad_present() ? 6 : 0; return vpad_present() ? g_vpadAxes : NULL; }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     unsigned char b[15]; pad_read(p, b, g_padAxes[j]); if (c) *c = 6; return g_padAxes[j];
 }
@@ -2226,12 +2256,17 @@ GLFW_API const unsigned char *glfwGetJoystickHats(int j, int *c) {
     if (c) *c = 1; return g_padHat[j];
 }
 GLFW_API const char *glfwGetJoystickName(int j) {
-    if (j == VPAD_SLOT) return vpad_present() ? "pziOS Virtual Gamepad" : NULL;
+    // A standard controller name, like the GUID: JoyPadSetup-style mapping tables fall back to the name when they do not
+    // know an identity, and the game's controller list reads better for it.
+    if (j == VPAD_SLOT) return vpad_present() ? "Xbox 360 Controller" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     strlcpy(g_padName[j], (p.vendorName ?: @"Game Controller").UTF8String, sizeof g_padName[j]); return g_padName[j];
 }
 GLFW_API const char *glfwGetJoystickGUID(int j) {
-    if (j == VPAD_SLOT) return vpad_present() ? "0300005e000000000000000000000000" : NULL;
+    // A real Xbox 360 (XInput) GUID. Project Zomboid and mods map controllers from a fixed table keyed by GUID, so an
+    // invented one made the virtual pad connected but unmapped: their axes were never read, which is why the analog
+    // movement stick moved nothing. This identity is in every standard controller table.
+    if (j == VPAD_SLOT) return vpad_present() ? "030000005e0400008e02000014010000" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     NSUInteger h = [(p.vendorName ?: @"Game Controller") hash];
     snprintf(g_padGuid[j], sizeof g_padGuid[j], "030000%02x%08lx0000%04x0000000000", 0x5e, (unsigned long)h & 0xffffffffUL, (unsigned)(j & 0xffff));
@@ -2244,6 +2279,7 @@ GLFW_API int glfwUpdateGamepadMappings(const char *s) { return 1; }
 GLFW_API const char *glfwGetGamepadName(int j) { return glfwJoystickIsGamepad(j) ? glfwGetJoystickName(j) : NULL; }
 GLFW_API int glfwGetGamepadState(int j, GLFWgamepadstate *st) {
     if (j == VPAD_SLOT) {
+        vpad_note_read();
         if (!vpad_present()) return 0;
         memcpy(st->buttons, g_vpadButtons, 15);
         memcpy(st->axes, g_vpadAxes, sizeof g_vpadAxes);

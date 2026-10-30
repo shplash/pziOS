@@ -705,6 +705,7 @@ struct TouchLayoutEditor: View {
     @State private var newName = ""
     @State private var currentPreset = ""        // the saved layout this came from; cleared once a control is changed
     @State private var panelHidden = false       // the empty-canvas preview: the panel steps aside so the whole layout is visible
+    @State private var hideForDrag = false       // the panel also steps aside while a control is being dragged, so it never blocks the drop
     @State private var driving = false           // editing the driving layout instead of the on-foot one
 
     private var selectedIndex: Int? { layout.items.firstIndex { $0.id == selected } }
@@ -761,9 +762,12 @@ struct TouchLayoutEditor: View {
                         .contentShape(Capsule())      // a circle for round controls, the whole bar for the scroll strip
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas")).onChanged { v in
                             if selected != item.id { selected = item.id }
+                            if !hideForDrag { withAnimation(.easeOut(duration: 0.12)) { hideForDrag = true } }
                             let r = item.halfSize
                             item.x = min(max(v.location.x, r.width), W - r.width) / W
                             item.y = min(max(v.location.y, r.height), H - r.height) / H
+                        }.onEnded { _ in
+                            withAnimation(.easeOut(duration: 0.18)) { hideForDrag = false }
                         })
                         .position(x: item.x * W, y: item.y * H)
                 }
@@ -774,18 +778,22 @@ struct TouchLayoutEditor: View {
                     Button {
                         Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = false }
                     } label: {
-                        Image(systemName: "slider.horizontal.3").font(.system(size: 14, weight: .semibold))
-                            .frame(width: 42, height: 42)
-                            .background(Color.white.opacity(0.16), in: Circle())
-                            .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                        HStack(spacing: 6) {
+                            Image(systemName: "slider.horizontal.3").font(.system(size: 12, weight: .semibold))
+                            Text("Panel").font(.system(size: 12, weight: .semibold))
+                        }
+                        .frame(height: 38).padding(.horizontal, 14)
+                        .background(Color.white.opacity(0.16), in: Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
                     }.buttonStyle(PressStyle())
-                    .position(x: W - 34, y: H - 46)
-                } else {
+                    .position(x: W - 64, y: H - 40)
+                } else if !hideForDrag {
                     panel
-                        .frame(width: min(430, W * 0.46))
+                        .frame(width: min(360, max(272, W * 0.36)))
                         .frame(maxHeight: H - 16)                  // never taller than the screen; the panel scrolls instead
-                        .offset(x: (W - min(430, W * 0.46)) / 2 - 12 + panelOffset.width + panelDrag.width,
+                        .offset(x: (W - min(360, max(272, W * 0.36))) / 2 - 12 + panelOffset.width + panelDrag.width,
                                 y: panelOffset.height + panelDrag.height)   // docked to the right edge, and draggable from there
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .coordinateSpace(name: "canvas")
@@ -808,7 +816,7 @@ struct TouchLayoutEditor: View {
                 TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
             }
         }
-        .onDisappear { saveItem?.cancel(); TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); syncAnalogEngine() }
+        .onDisappear { saveItem?.cancel(); hideForDrag = false; TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); syncAnalogEngine() }
         .onAppear {
             presets = TouchPresetStore.load(pad: pad, driving: slotDriving)
             currentPreset = TouchPresetStore.activeName(pad: pad, driving: slotDriving)
@@ -846,10 +854,10 @@ struct TouchLayoutEditor: View {
     // MARK: metrics — one set of sizes, so every row and button lines up
 
     private enum M {
-        static let label: CGFloat = 108      // label column
-        static let value: CGFloat = 52       // value column (right aligned, monospaced)
+        static let label: CGFloat = 96       // label column
+        static let value: CGFloat = 46       // value column (right aligned, monospaced)
         static let row: CGFloat = 34
-        static let control: CGFloat = 32
+        static let control: CGFloat = 30
         static let gap: CGFloat = 8
         static let section: CGFloat = 14
     }
@@ -959,9 +967,9 @@ struct TouchLayoutEditor: View {
                 panelHeader
                 panelActions
                 panelEditing
+                panelSelectedControl       // right under the actions: what you tapped is in reach without scrolling
                 panelLayoutSettings
                 panelTouchSettings
-                panelSelectedControl
             }
         }
         .scrollBounceBehavior(.basedOnSize)
@@ -999,17 +1007,19 @@ struct TouchLayoutEditor: View {
 
     private var panelActions: AnyView {
         AnyView(
-            // Two even columns instead of four squeezed pills.
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: M.gap), GridItem(.flexible(), spacing: M.gap)], spacing: M.gap) {
-                addMenu
-                Button {
-                    Haptics.tap()
-                    layout = shippedLayout
-                    TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); selected = nil
-                    currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
-                } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
-                if !pad { presetsMenu }
-                savedMenu
+            VStack(spacing: M.gap) {
+                // Two even columns, so every button is the same size.
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: M.gap), GridItem(.flexible(), spacing: M.gap)], spacing: M.gap) {
+                    addMenu
+                    Button {
+                        Haptics.tap()
+                        layout = shippedLayout
+                        TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); selected = nil
+                        currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
+                    } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
+                    if !pad { presetsMenu }
+                    savedMenu
+                }
                 Button { Haptics.tap(); dismiss() } label: { actionPill("Done", system: "checkmark", filled: true) }.buttonStyle(PressStyle())
             }
         )
@@ -1217,7 +1227,7 @@ struct TouchLayoutEditor: View {
     @ViewBuilder private func padStickRows(_ i: Int) -> some View {
                 row("Acts as") {
                     Picker("", selection: Binding(get: { layout.items[i].code }, set: { layout.items[i].code = $0 })) { Text("Left").tag(0); Text("Right").tag(1) }
-                        .pickerStyle(.segmented).frame(width: 150)
+                        .pickerStyle(.segmented)
                 }
     }
 
@@ -1226,7 +1236,7 @@ struct TouchLayoutEditor: View {
                     Picker("", selection: Binding(get: { (layout.items[i].stickArrows ?? false) ? 1 : 0 },
                                                   set: { layout.items[i].stickArrows = $0 == 1 ? true : nil })) {
                         Text("WASD").tag(0); Text("Arrows").tag(1)
-                    }.pickerStyle(.segmented).frame(width: 150)
+                    }.pickerStyle(.segmented)
                 }
                 // What the stick actually sends. Keys is the game's own keyboard movement (eight directions, one speed);
                 // Analog hands the thumb to a virtual controller's left stick (360°, speed follows the push).
@@ -1237,10 +1247,10 @@ struct TouchLayoutEditor: View {
                         syncAnalogEngine()
                     })) {
                         Text("Keys").tag("keys"); Text("Analog").tag("pad")
-                    }.pickerStyle(.segmented).frame(width: 150)
+                    }.pickerStyle(.segmented)
                 }
                 if (layout.items[i].stickEngine ?? "keys") == "pad" {
-                    Text("Analog gives the stick to a virtual controller: the game walks with a 360° stick whose speed follows how far you push, instead of eight firing W/A/S/D at full walk. Project Zomboid sees a controller for movement (so it may show controller prompts); buttons and aiming stay touch. The Run and Sprint marks below do not apply to this engine, and the game's own controller sprint does.")
+                    Text("Analog sends the stick to a virtual controller: 360° movement, with the speed following the push. Project Zomboid has to be using its controller support for that; if it is not, the stick still works as Keys.")
                         .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                         .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 }
@@ -1292,7 +1302,7 @@ struct TouchLayoutEditor: View {
                                in: 0.6...1.5, step: 0.01).tint(.white)
                     }
                 }
-                Text("Sends the keyboard's own keys, with a dead zone so a resting thumb does not move you. Push past the first mark to Run, and drag beyond the stick's edge (over 100%) to Sprint at the second; both marks are drawn on the stick. In a vehicle Shift + W is cruise control, so turn the stages off (or use the Driving preset) when you drive.")
+                Text("Sends W/A/S/D (or the arrows) with a dead zone and a locked direction. Push past the first mark to Run, and past the rim to Sprint. Shift+W is cruise control in a vehicle, so turn the stages off when you drive.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 }
@@ -1382,7 +1392,7 @@ struct TouchLayoutEditor: View {
                         .frame(width: 90, height: M.control)
                         .background(Color.white.opacity(0.12), in: Capsule())
                 }
-                Text("Both keys are held while the button is pressed. The game uses Shift+W for cruise control (and Shift+S to slow down), which is what the driving layout's C+ / C- buttons send.")
+                Text("Both keys are held while the button is pressed. Shift+W and Shift+S are cruise control, which is what the driving layout's C+ / C− send.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
     }
@@ -1395,44 +1405,45 @@ struct TouchLayoutEditor: View {
                         .frame(width: 90, height: M.control)
                         .background(Color.white.opacity(0.12), in: Capsule())
                 }
-                Text("Each tap switches between the on-foot layout and the driving one. With \"Switch in a vehicle\" on, the game's vehicle state does it for you (pziOSDrive.lua writes the marker the overlay watches).")
+                Text("Each tap switches between the on-foot and driving layouts. With Switch in a Vehicle on, the game does it for you.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
     }
 
     /// Size and the buttons every control has, whatever it sends.
     @ViewBuilder private func inspectorSharedRows(_ i: Int, _ item: TouchItem) -> some View {
-            row("Size", value: String(format: "%.0f", item.size)) {
-                Slider(value: Binding(get: { layout.items[i].size }, set: { layout.items[i].size = $0 }),
-                       in: item.kind == .scroll ? 40.0...90.0 : (item.isStick ? 90.0 : 36.0)...(item.isStick ? 200.0 : 110.0))
-                    .tint(.white)
-            }
-            // A copy of a control, offset a little, for building clusters without setting every field again.
-            Button {
-                Haptics.tap(); duplicate(i)
-            } label: {
-                Label("Duplicate", systemImage: "plus.square.on.square")
-                    .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
-                    .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
+        row("Size", value: String(format: "%.0f", item.size)) {
+            Slider(value: Binding(get: { layout.items[i].size }, set: { layout.items[i].size = $0 }),
+                   in: item.kind == .scroll ? 40.0...90.0 : (item.isStick ? 90.0 : 36.0)...(item.isStick ? 200.0 : 110.0))
+                .tint(.white)
+        }
+        // The actions on the control itself, on one line instead of three.
+        HStack(spacing: M.gap) {
+            Button { Haptics.tap(); duplicate(i) } label: {
+                miniAction("Duplicate", system: "plus.square.on.square")
             }.buttonStyle(PressStyle())
-            // A control that came with the layout can be put back exactly as it shipped, instead of being deleted and re-added by hand.
-            if let original = shippedLayout.items.first(where: { $0.id == item.id }),
-               original != item {
-                Button {
-                    Haptics.tap(); layout.items[i] = original
-                } label: {
-                    Label("Reset this control", systemImage: "arrow.counterclockwise")
-                        .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
-                        .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
+            if let original = shippedLayout.items.first(where: { $0.id == item.id }), original != item {
+                Button { Haptics.tap(); layout.items[i] = original } label: {
+                    miniAction("Reset", system: "arrow.counterclockwise")
                 }.buttonStyle(PressStyle())
             }
             if !item.locked {
                 Button(role: .destructive) { layout.items.remove(at: i); selected = nil } label: {
-                    Label("Delete control", systemImage: "trash")
-                        .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
-                        .background(Color.red.opacity(0.18), in: Capsule()).foregroundStyle(Color.red)
+                    miniAction("Delete", system: "trash", danger: true)
                 }.buttonStyle(PressStyle())
             }
+        }
+    }
+
+    /// A compact capsule action (an icon over a short word), so two or three fit on one line of the panel.
+    private func miniAction(_ title: String, system: String, danger: Bool = false) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: system).font(.system(size: 12, weight: .semibold))
+            Text(title).font(.system(size: 9.5, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity).frame(height: 40)
+        .background(danger ? Color.red.opacity(0.18) : Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .foregroundStyle(danger ? Color.red : Color.white)
     }
 
     /// The icon the control draws instead of its text. "Text only" clears it; a name the running iOS does not have falls

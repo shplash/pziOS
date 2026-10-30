@@ -918,8 +918,8 @@ struct SettingsView: View {
             ] + (virtualPad ? [] : [
                 Row(id: "stickengine", title: "Movement Engine", kind: .choice(["Keys", "Analog"], Binding(get: { analogMovement ? 1 : 0 },
                         set: { v in analogMovement = v == 1; TouchLayoutStore.setStickEngine(v == 1 ? "pad" : nil) })), group: "Layout",
-                    detail: analogMovement ? "Analog: the movement stick drives a virtual controller's left stick, so walking is 360° and the speed follows how far you push it. Project Zomboid sees a controller for movement, so it may show controller prompts; buttons and aiming stay touch. Also set per stick in the layout editor."
-                                         : "Keys: the movement stick sends W/A/S/D (or the arrow keys), which is the game's own keyboard movement: eight directions at walking speed, with Run and Sprint marks push you can set. Switch to Analog for a 360° stick with a speed that follows the push. Also set per stick in the layout editor."),
+                    detail: analogMovement ? "Analog: the stick drives a virtual controller's left stick, for 360° movement with the speed following the push. Project Zomboid must be using its controller support; if it is not, the stick still sends W/A/S/D. Also set per stick in the layout editor."
+                                         : "Keys: the stick sends W/A/S/D (or the arrows), the game's own keyboard movement. Switch to Analog for a 360° stick. Also set per stick in the layout editor."),
                 Row(id: "drivingedit", title: "Edit driving layout", kind: .action(destructive: false) { editor = .driving }, group: "Layout",
                     detail: "The layout the game switches to in a vehicle: steering arrows, gas, brake, a handbrake that latches and Shift+W/Shift+S cruise control. Also reachable from the On foot / Driving switch in the editor."),
             ]) + [
