@@ -411,8 +411,8 @@ struct TouchLayoutEditor: View {
     @AppStorage("zom.scrollMomentum") private var scrollMomentum = false   // keep scrolling for a moment after a flick
     @AppStorage("zom.uiMargin") private var uiMargin = 2            // the game's UI Margins setting, drawn as a guide
     @State private var showGuides = true
-    @State private var guideSafe = EdgeInsets()                     // safe area, as fractions of the screen
-    @State private var guideMargin = EdgeInsets()                   // the game's UI margins, as fractions of the screen
+    @State private var guideSafe = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)     // safe area, as fractions of the screen
+    @State private var guideMargin = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)   // the game's UI margins, as fractions of the screen
     @State private var presets: [TouchPreset] = []
     @State private var naming = false
     @State private var newName = ""
@@ -621,20 +621,27 @@ struct TouchLayoutEditor: View {
             let p = ZomMargins.autoPoints(d, scale: ZomMargins.scales[min(uiMargin, 3)])
             guideMargin = EdgeInsets(top: p[1] / h, leading: p[0] / w, bottom: p[3] / h, trailing: p[2] / w)
         } else {
-            guideMargin = EdgeInsets()
+            guideMargin = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
         }
     }
 
     private var panel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: M.section) {
-                HStack {
-                    Text(pad ? "Virtual Gamepad" : "Touch Controls").font(.system(size: 15, weight: .bold))
-                    if !currentPreset.isEmpty {
-                        Text(currentPreset).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(1).minimumScaleFactor(0.7)
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Text(pad ? "Virtual Gamepad" : "Touch Controls").font(.system(size: 15, weight: .bold))
+                        if !currentPreset.isEmpty {
+                            Text(currentPreset).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                        }
                     }
-                    Spacer()
+                    .contentShape(Rectangle())
+                    // Only the title area drags the panel, so the buttons beside it still get their taps.
+                    .simultaneousGesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { panelDrag = $0.translation }.onEnded { v in
+                        panelOffset.width += v.translation.width; panelOffset.height += v.translation.height; panelDrag = .zero
+                    })
+                    Spacer(minLength: 4)
                     Button {
                         Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = true }
                     } label: {
@@ -643,10 +650,6 @@ struct TouchLayoutEditor: View {
                     Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.4))
                 }
                 .frame(height: M.control)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { panelDrag = $0.translation }.onEnded { v in
-                    panelOffset.width += v.translation.width; panelOffset.height += v.translation.height; panelDrag = .zero
-                })
 
                 // Two even columns instead of four squeezed pills.
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: M.gap), GridItem(.flexible(), spacing: M.gap)], spacing: M.gap) {
