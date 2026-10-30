@@ -399,9 +399,9 @@ enum TouchLayoutStore {
         l = with(l, "engine") { $0.icon = "engine.combustion" }
         l = with(l, "vehicle") { $0.icon = "car.fill" }
         // Cruise control: the game's own Shift+W (faster) and Shift+S (slower) as two-key buttons.
-        var cruiseUp = TouchItem(id: "cruiseup", kind: .combo, label: "C+", code: 340, x: 866 / 956.0, y: 236 / 440.0, size: 54)
+        var cruiseUp = TouchItem(id: "cruiseup", kind: .combo, label: "CRU+", code: 340, x: 866 / 956.0, y: 236 / 440.0, size: 54)
         cruiseUp.code2 = 87; cruiseUp.icon = "speedometer"
-        var cruiseDown = TouchItem(id: "cruisedown", kind: .combo, label: "C-", code: 340, x: 866 / 956.0, y: 172 / 440.0, size: 50)
+        var cruiseDown = TouchItem(id: "cruisedown", kind: .combo, label: "CRU-", code: 340, x: 866 / 956.0, y: 172 / 440.0, size: 50)
         cruiseDown.code2 = 83; cruiseDown.icon = "speedometer"
         l.items.append(contentsOf: [cruiseUp, cruiseDown])
         return icons(l)
