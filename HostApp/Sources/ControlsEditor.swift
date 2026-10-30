@@ -417,6 +417,7 @@ struct TouchLayoutEditor: View {
     @State private var naming = false
     @State private var newName = ""
     @State private var currentPreset = ""        // the saved layout this came from; cleared once a control is changed
+    @State private var panelHidden = false       // the empty-canvas preview: the panel steps aside so the whole layout is visible
 
     private var selectedIndex: Int? { layout.items.firstIndex { $0.id == selected } }
 
@@ -435,7 +436,7 @@ struct TouchLayoutEditor: View {
 
                 ForEach($layout.items) { $item in
                     // gesture goes on before .position, so each control's touch area is the control itself, not the whole screen
-                    Chip(item: $item, selected: selected == item.id, opacity: layout.opacity)
+                    Chip(item: $item, selected: selected == item.id, opacity: max(layout.opacity, 0.22))
                         .contentShape(Capsule())      // a circle for round controls, the whole bar for the scroll strip
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas")).onChanged { v in
                             if selected != item.id { selected = item.id }
@@ -448,10 +449,23 @@ struct TouchLayoutEditor: View {
                 if let i = selectedIndex, layout.items[i].kind == .radial {      // how the selected radial opens in game
                     RadialPreview(item: layout.items[i], W: W, H: H).allowsHitTesting(false)
                 }
-                panel
-                    .frame(width: min(430, W * 0.46))
-                    .frame(maxHeight: H - 16)                  // never taller than the screen; the panel scrolls instead
-                    .offset(x: panelOffset.width + panelDrag.width, y: panelOffset.height + panelDrag.height)
+                if panelHidden {
+                    Button {
+                        Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = false }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3").font(.system(size: 14, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .background(Color.white.opacity(0.16), in: Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                    }.buttonStyle(PressStyle())
+                    .position(x: W - 34, y: H - 46)
+                } else {
+                    panel
+                        .frame(width: min(430, W * 0.46))
+                        .frame(maxHeight: H - 16)                  // never taller than the screen; the panel scrolls instead
+                        .offset(x: (W - min(430, W * 0.46)) / 2 - 12 + panelOffset.width + panelDrag.width,
+                                y: panelOffset.height + panelDrag.height)   // docked to the right edge, and draggable from there
+                }
             }
             .coordinateSpace(name: "canvas")
         }
@@ -620,6 +634,11 @@ struct TouchLayoutEditor: View {
                             .lineLimit(1).minimumScaleFactor(0.7)
                     }
                     Spacer()
+                    Button {
+                        Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = true }
+                    } label: {
+                        Image(systemName: "eye.slash").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+                    }.buttonStyle(.plain)
                     Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.4))
                 }
                 .frame(height: M.control)
@@ -646,6 +665,11 @@ struct TouchLayoutEditor: View {
                     sectionTitle("Layout")
                     row("Opacity", value: String(format: "%.0f%%", layout.opacity * 100)) {
                         Slider(value: $layout.opacity, in: 0.05...1).tint(.white)      // 5% floor: still findable, and iOS ignores touches under 1%
+                    }
+                    if layout.opacity < 0.22 {
+                        Text("Below 22% the editor shows the controls a little stronger so you can still find them; the game uses the exact value.")
+                            .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.42))
+                            .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                     }
                     toggleRow("Show guides", $showGuides)
                 }
@@ -870,6 +894,14 @@ struct TouchLayoutEditor: View {
                        in: item.kind == .scroll ? 40.0...90.0 : (item.isStick ? 90.0 : 36.0)...(item.isStick ? 200.0 : 110.0))
                     .tint(.white)
             }
+            // A copy of a control, offset a little, for building clusters without setting every field again.
+            Button {
+                Haptics.tap(); duplicate(i)
+            } label: {
+                Label("Duplicate", systemImage: "plus.square.on.square")
+                    .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
+                    .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
+            }.buttonStyle(PressStyle())
             // A control that came with the layout can be put back exactly as it shipped, instead of being deleted and re-added by hand.
             if let original = (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout).items.first(where: { $0.id == item.id }),
                original != item {
@@ -1075,6 +1107,16 @@ struct TouchLayoutEditor: View {
         let item = TouchItem(id: UUID().uuidString, kind: kind, label: label, code: code, x: 0.5, y: 0.78, size: size)
         layout.items.append(item); selected = item.id
     }
+
+    private func duplicate(_ i: Int) {
+        guard layout.items.indices.contains(i) else { return }
+        var copy = layout.items[i]
+        copy.id = UUID().uuidString
+        copy.x = min(copy.x + 0.04, 0.98)
+        copy.y = min(copy.y + 0.04, 0.98)
+        layout.items.append(copy)
+        selected = copy.id
+    }
 }
 
 /// How one control looks in the editor; mirrors the in-game overlay.
@@ -1102,6 +1144,15 @@ private struct Chip: View {
         ZStack {
             Circle().fill(item.kind == .aimstick ? Color(red: 0.35, green: 0.08, blue: 0.06).opacity(0.45) : Color(white: 0.1).opacity(0.45))
             Circle().stroke(item.kind == .aimstick ? Color(red: 1, green: 0.55, blue: 0.5).opacity(0.7) : Color.white.opacity(0.6), lineWidth: 2)
+            if item.kind == .stick {          // where the dead zone ends, and where Run/Sprint starts
+                Circle().stroke(Color.white.opacity(0.22), lineWidth: 1)
+                    .frame(width: item.size * max(0.05, min(0.6, item.stickDead ?? 0.18)))
+                if (item.stickPushKey ?? 340) != 0 {
+                    Circle().stroke(Color(red: 1, green: 0.72, blue: 0.35).opacity(0.35),
+                                    style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .frame(width: item.size * max(0.5, min(1.0, item.stickPushAt ?? 0.85)))
+                }
+            }
             if item.isStick {
                 Circle().fill(item.kind == .aimstick ? Color(red: 1, green: 0.6, blue: 0.55).opacity(0.6) : Color.white.opacity(0.55)).frame(width: item.size * 0.38, height: item.size * 0.38)
                 if item.kind == .aimstick { Image(systemName: "scope").font(.system(size: item.size * 0.2)).foregroundStyle(.white.opacity(0.8)) }

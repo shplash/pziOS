@@ -732,8 +732,9 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGFloat ux = mag > 0 ? dx / r / mag : 0, uy = mag > 0 ? dy / r / mag : 0;  // unit direction
     CGFloat ax = ux * travel, ay = uy * travel;
 
-    // Hysteresis: a direction engages at 0.35 of the travel and releases only below 0.24.
-    CGFloat on = 0.35, off = 0.24;
+    // Hysteresis: a direction engages at 0.18 of the travel and releases only below 0.12, so the stick starts moving with a
+    // light push (about a third of the radius) but a thumb resting near the middle cannot make you drift.
+    CGFloat on = 0.18, off = 0.12;
     [self set:ay < -(self.up ? off : on) key:self.keyUp flag:&_up];
     [self set:ay > (self.down ? off : on) key:self.keyDown flag:&_down];
     [self set:ax < -(self.left ? off : on) key:self.keyLeft flag:&_left];
