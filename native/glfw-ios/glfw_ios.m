@@ -248,7 +248,23 @@ static void vpad_set_stick(int stick, float x, float y) {
 @property (nonatomic, strong) UILabel *label;
 @property (nonatomic) BOOL down;
 @property (nonatomic) CGPoint norm;      // centre as a fraction of the view (from the saved layout); (0,0) = use the built-in position
+// Two-thumb options, key and mouse buttons only, all off unless the touch editor turns them on:
+//  dragAimOn    - dragging a finger held on the button also moves the cursor, so one thumb attacks or shoves and aims at the same time.
+//  holdLockOn   - a long press keeps the button held after the finger lifts (e.g. RC for hands-free aiming); the next tap lets go.
+//  fireMode     - 0 default: held while the finger is down. 1 auto: held and re-pressed repeatedly. 2 release: holding only aims,
+//                 lifting the finger sends one press. A fire mode toggle (kind 7) switches its target between 0 and 2 in game.
+@property (nonatomic) BOOL dragAimOn, holdLockOn;
+@property (nonatomic) double holdLockDelay;             // seconds before a long-press lock engages (default 0.5)
+@property (nonatomic) int fireMode;
+@property (nonatomic, copy) NSString *itemId, *targetId;
+@property (nonatomic, strong) NSTimer *autoTimer;
+@property (nonatomic) BOOL armed, latched, dragActive;
+@property (nonatomic, weak) UITouch *dragTouch;
+@property (nonatomic) CGPoint dragStart, dragLast;
+@property (nonatomic) NSUInteger pressToken;
 + (instancetype)buttonWithTitle:(NSString *)t kind:(int)k code:(int)c size:(CGFloat)size;
+- (void)releaseLatch;
+- (void)stopAuto;
 @end
 @interface GLFWiOSView : UIView <UIGestureRecognizerDelegate>
 @property (nonatomic) GLFWwindow *win;
@@ -272,6 +288,10 @@ static void vpad_set_stick(int stick, float x, float y) {
 - (void)toggleMode;
 - (void)toggleKeyboard;
 - (void)toggleControls;
+- (void)releaseLatches;
+- (void)cycleFireModeFrom:(ZOButton *)toggle;
+- (void)cycleFireModeForTarget:(NSString *)targetId;
+- (void)updateFireToggles;
 - (void)updateControlVisibility;
 - (void)updateCursorVisibility;
 - (void)setPadConnected:(BOOL)on;
@@ -291,9 +311,15 @@ static void vpad_set_stick(int stick, float x, float y) {
     [b addSubview:b.label];
     return b;
 }
+- (void)updateLook {
+    if (self.armed && !self.down) self.backgroundColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.2 alpha:0.6];     // armed: amber until it fires on release
+    else self.backgroundColor = self.down ? [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.75] : [UIColor colorWithWhite:0.1 alpha:0.45];
+    self.layer.borderWidth = self.latched ? 4 : 2;                       // a held (latched) button gets a thick gold ring
+    self.layer.borderColor = (self.latched ? [UIColor colorWithRed:1 green:0.85 blue:0.3 alpha:1] : [UIColor colorWithWhite:1 alpha:0.6]).CGColor;
+}
 - (void)setDown:(BOOL)d {
     if (_down == d) return; _down = d;
-    self.backgroundColor = d ? [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.75] : [UIColor colorWithWhite:0.1 alpha:0.45];
+    [self updateLook];
     GLFWiOSView *gv = (GLFWiOSView *)self.superview;
     if (self.kind == 0) push_key(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
     else if (self.kind == 1) push_mouse(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
@@ -302,10 +328,130 @@ static void vpad_set_stick(int stick, float x, float y) {
     else if (d && self.kind == 2) [gv toggleKeyboard];
     else if (d && self.kind == 3) [gv toggleControls];
     else if (d && self.kind == 4) [gv toggleMode];
+    else if (d && self.kind == 7) [gv cycleFireModeFrom:self];
+    if (d && self.kind == 0 && self.code == 256) [gv releaseLatches];     // ESC (menus, pause) lets go of any locked button
 }
-- (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = YES; }
-- (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
+- (void)releaseLatch {
+    if (!self.latched) return;
+    self.latched = NO; self.down = NO; [self updateLook];
+}
+/// Sends a press or release without touching the look (auto mode's re-presses).
+- (void)sendQuiet:(BOOL)press {
+    if (self.kind == 0) push_key(self.code, press ? GLFW_PRESS : GLFW_RELEASE);
+    else if (self.kind == 1) push_mouse(self.code, press ? GLFW_PRESS : GLFW_RELEASE);
+}
+- (void)stopAuto { [self.autoTimer invalidate]; self.autoTimer = nil; }
+- (void)autoTick:(NSTimer *)tm {
+    if (!self.down || self.fireMode != 1) { [self stopAuto]; return; }
+    [self sendQuiet:NO];
+    __weak ZOButton *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 40 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        ZOButton *s = ws; if (s && s.down && s.fireMode == 1) [s sendQuiet:YES];
+    });
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (self.latched) { [self releaseLatch]; self.dragTouch = nil; return; }       // a tap on a held button lets go of it
+    UITouch *t = ts.anyObject;
+    if (!self.dragTouch) { self.dragTouch = t; self.dragStart = self.dragLast = [t locationInView:self.superview]; self.dragActive = NO; }
+    NSUInteger tok = ++self.pressToken;
+    if (self.fireMode == 2 && self.kind <= 1) { self.armed = YES; [self updateLook]; return; }     // release mode: nothing is sent until the finger lifts
+    self.down = YES;
+    if (self.fireMode == 1 && self.kind <= 1 && !self.autoTimer)
+        self.autoTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(autoTick:) userInfo:nil repeats:YES];
+    if (self.holdLockOn && self.kind <= 1 && self.fireMode == 0) {                  // auto and release modes don't lock
+        __weak ZOButton *ws = self;
+        double delay = self.holdLockDelay > 0 ? self.holdLockDelay : 0.5;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ZOButton *s = ws;
+            if (!s || s.pressToken != tok || !s.down || s.dragActive || s.latched) return;
+            s.latched = YES; [s updateLook];
+            [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+        });
+    }
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    UITouch *t = self.dragTouch;
+    if (!t || ![ts containsObject:t] || self.kind > 1 || !self.dragAimOn) return;
+    GLFWiOSView *gv = (GLFWiOSView *)self.superview;
+    CGPoint p = [t locationInView:gv];
+    if (!self.dragActive) {                                                         // small dead zone so a held press doesn't nudge the cursor
+        if (hypot(p.x - self.dragStart.x, p.y - self.dragStart.y) < 8) return;
+        self.dragActive = YES; self.dragLast = p; return;
+    }
+    double k = [NSUserDefaults.standardUserDefaults doubleForKey:@"zom.dragAimSens"]; if (k <= 0) k = 1.0;
+    [gv moveCursorTo:CGPointMake(gv.cursorPt.x + (p.x - self.dragLast.x) * k, gv.cursorPt.y + (p.y - self.dragLast.y) * k)];
+    self.dragLast = p;
+}
+- (void)finishTouches:(NSSet<UITouch *> *)ts cancelled:(BOOL)cancelled {
+    self.pressToken++;                                                              // cancels a pending long press
+    if (self.dragTouch && [ts containsObject:self.dragTouch]) { self.dragTouch = nil; self.dragActive = NO; }
+    [self stopAuto];
+    if (self.armed) {                                                               // fire on release: one quick press as the finger lifts
+        self.armed = NO; [self updateLook];
+        if (!cancelled) {
+            self.down = YES;
+            __weak ZOButton *ws = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ ws.down = NO; });
+        }
+        return;
+    }
+    if (cancelled) [self releaseLatch];
+    if (self.latched) return;                                                       // finger lifted but the button stays held
+    self.down = NO;
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finishTouches:ts cancelled:NO]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finishTouches:ts cancelled:YES]; }
+@end
+
+// Scroll strip: a tall narrow bar. Sliding a finger up or down on it sends mouse-wheel notches at the cursor, so containers scroll
+// (and the world zooms) with one thumb instead of a two-finger gesture. "zom.scrollSpeed" (notches per 16 pt of travel) and
+// "zom.scrollInvert" come from the touch editor.
+@interface ZOScrollStrip : UIView
+@property (nonatomic) CGPoint norm;
+@property (nonatomic, weak) UITouch *touch;
+@property (nonatomic) CGFloat lastY, carry;
+@end
+@implementation ZOScrollStrip
+- (instancetype)initWithFrame:(CGRect)f {
+    if ((self = [super initWithFrame:f])) {
+        self.multipleTouchEnabled = YES;
+        self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
+        self.layer.cornerRadius = f.size.width / 2; self.layer.borderWidth = 2; self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
+        CGFloat W = f.size.width, H = f.size.height, cx = W / 2, cy = H / 2, g = W * 0.36, a = W * 0.2, m = W * 0.45;
+        UIBezierPath *p = [UIBezierPath bezierPath];
+        for (int i = -1; i <= 1; i++) { [p moveToPoint:CGPointMake(cx - g / 2, cy + i * 7)]; [p addLineToPoint:CGPointMake(cx + g / 2, cy + i * 7)]; }   // grip
+        [p moveToPoint:CGPointMake(cx - a, m + a)]; [p addLineToPoint:CGPointMake(cx, m)]; [p addLineToPoint:CGPointMake(cx + a, m + a)];              // up arrow
+        [p moveToPoint:CGPointMake(cx - a, H - m - a)]; [p addLineToPoint:CGPointMake(cx, H - m)]; [p addLineToPoint:CGPointMake(cx + a, H - m - a)];  // down arrow
+        CAShapeLayer *l = [CAShapeLayer layer]; l.path = p.CGPath; l.fillColor = nil; l.lineWidth = 2; l.lineCap = kCALineCapRound; l.lineJoin = kCALineJoinRound;
+        l.strokeColor = [UIColor colorWithWhite:1 alpha:0.7].CGColor; [self.layer addSublayer:l];
+    }
+    return self;
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (self.touch) return;
+    self.touch = ts.anyObject; self.lastY = [self.touch locationInView:self].y; self.carry = 0;
+    self.backgroundColor = [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.5];
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (!self.touch || ![ts containsObject:self.touch]) return;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    double k = [d doubleForKey:@"zom.scrollSpeed"]; if (k <= 0) k = 1.0;
+    CGFloat y = [self.touch locationInView:self].y;
+    CGFloat step = (self.lastY - y) / 16.0 * k * ([d boolForKey:@"zom.scrollInvert"] ? -1 : 1);
+    if (step > 4) step = 4; else if (step < -4) step = -4;          // a stalled finger must not jump the view
+    self.carry += step; self.lastY = y;
+    int sent = 0;
+    while (fabs(self.carry) >= 1 && sent < 6) {                     // whole notches, like a real wheel
+        int n = self.carry > 0 ? 1 : -1; self.carry -= n; sent++;
+        Ev ev = {.type = EV_SCROLL, .x = 0, .y = n}; push_event(ev);
+    }
+}
+- (void)finish:(NSSet<UITouch *> *)ts {
+    if (!self.touch || ![ts containsObject:self.touch]) return;
+    self.touch = nil; self.carry = 0; self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
 @end
 
 @interface ZOJoystick : UIView
@@ -579,6 +725,29 @@ static void frame_rate_hint_start(void) {
     if (self.keyboardShown) [self.kbInput becomeFirstResponder];
     else { [self.kbInput resignFirstResponder]; [self becomeFirstResponder]; }
 }
+- (void)releaseLatches {
+    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class]) [(ZOButton *)v releaseLatch];
+}
+- (ZOButton *)buttonWithItemId:(NSString *)iid {
+    if (!iid.length) return nil;
+    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
+    return nil;
+}
+- (void)cycleFireModeFrom:(ZOButton *)toggle { [self cycleFireModeForTarget:toggle.targetId]; }
+- (void)cycleFireModeForTarget:(NSString *)targetId {
+    ZOButton *t = [self buttonWithItemId:targetId]; if (!t || t.kind > 1) return;
+    t.fireMode = t.fireMode == 2 ? 0 : 2;                 // auto counts as default: holding a button already repeats most actions
+    [self updateFireToggles];
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+}
+- (void)updateFireToggles {
+    static NSString *const names[] = { @"DEF", @"AUTO", @"REL" };
+    for (UIView *v in self.controls) {
+        if (![v isKindOfClass:ZOButton.class] || ((ZOButton *)v).kind != 7) continue;
+        ZOButton *t = [self buttonWithItemId:((ZOButton *)v).targetId];
+        ((ZOButton *)v).label.text = t ? names[MAX(0, MIN(2, t.fireMode))] : @"—";
+    }
+}
 - (void)toggleControls {
     self.controlsHidden = !self.controlsHidden;
     self.hideButton.label.text = self.controlsHidden ? @"SHOW" : @"HIDE";
@@ -593,6 +762,7 @@ static void frame_rate_hint_start(void) {
     [self updateCursorVisibility];
     // a controller, or a physical keyboard together with a mouse; the controller only hides the controls when the player left it that way
     BOOL away = (self.padConnected && pad_overlay_hides()) || kbm_connected();
+    if (self.controlsHidden || away) [self releaseLatches];   // a locked button must not stay held with nothing left to tap
     for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
     self.hideButton.hidden = away; self.modeButton.hidden = away;
 }
@@ -624,7 +794,7 @@ static void frame_rate_hint_start(void) {
     NSDictionary *lay = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
     NSArray *items = [lay isKindOfClass:NSDictionary.class] ? lay[@"items"] : nil;
     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
-    CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.2, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;
+    CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;   // 5% floor: under 1% iOS stops delivering touches
     int tag = 30;
     for (NSDictionary *it in items) {
         if (![it isKindOfClass:NSDictionary.class]) continue;
@@ -637,6 +807,11 @@ static void frame_rate_hint_start(void) {
         if ([kind isEqualToString:@"aimstick"]) {
             ZOAimStick *a = [[ZOAimStick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; a.tag = tag++; a.norm = norm; a.alpha = alpha;
             [self addSubview:a]; [self.controls addObject:a]; continue;
+        }
+        if ([kind isEqualToString:@"scroll"]) {           // drawn 0.6 x 2.2 times its size, so "size" scales it like the other controls
+            ZOScrollStrip *sc = [[ZOScrollStrip alloc] initWithFrame:CGRectMake(0, 0, size * 0.6, size * 2.2)];
+            sc.tag = tag++; sc.norm = norm; sc.alpha = alpha;
+            [self addSubview:sc]; [self.controls addObject:sc]; continue;
         }
         if ([kind isEqualToString:@"stick"]) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
@@ -653,9 +828,18 @@ static void frame_rate_hint_start(void) {
             pb.norm = norm; pb.alpha = alpha; pb.tag = tag++;
             [self addSubview:pb]; [self.controls addObject:pb]; continue;
         }
-        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : -1;
+        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 7 : -1;
         if (k < 0) continue;
         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
+        b.itemId = [it[@"id"] isKindOfClass:NSString.class] ? it[@"id"] : nil;
+        if (k <= 1) {                                                          // key and mouse buttons only: the per-button two-thumb options
+            id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"], ht = it[@"holdLockTime"];
+            b.holdLockDelay = [ht respondsToSelector:@selector(doubleValue)] ? MAX(0.1, MIN(3.0, [ht doubleValue])) : 0.5;
+            b.dragAimOn = [da respondsToSelector:@selector(boolValue)] && [da boolValue];
+            b.holdLockOn = [hl respondsToSelector:@selector(boolValue)] && [hl boolValue];
+            b.fireMode = [fm respondsToSelector:@selector(intValue)] ? MAX(0, MIN(2, [fm intValue])) : 0;
+        }
+        if (k == 7) b.targetId = [it[@"target"] isKindOfClass:NSString.class] ? it[@"target"] : nil;
         [self addSubview:b];
         if (k == 3) { self.hideButton = b; b.tag = 19; }
         else if (k == 4) { self.modeButton = b; b.tag = 20; }
@@ -663,6 +847,7 @@ static void frame_rate_hint_start(void) {
     }
     if (!self.hideButton) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
     if (!self.modeButton) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
+    [self updateFireToggles];
     glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
     return YES;
 }
@@ -670,15 +855,22 @@ static void frame_rate_hint_start(void) {
 // button must not count, or holding the stick with one thumb and a button with the other reads as a zoom gesture.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     for (UIView *v = touch.view; v && v != self; v = v.superview)
-        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOVPadStick.class]) return NO;
+        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOVPadStick.class] || [v isKindOfClass:ZOScrollStrip.class]) return NO;
     return YES;
 }
 - (void)installControls {
     self.multipleTouchEnabled = YES;
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(scrolled:)];
-    pan.minimumNumberOfTouches = 2; pan.maximumNumberOfTouches = 2; pan.cancelsTouchesInView = YES;
-    pan.delegate = self;
-    [self addGestureRecognizer:pan];
+    // Two-finger zoom (Settings > Controls) can be turned off, because it also fires with a thumb on the stick and one on a button;
+    // the scroll strip does the same job with one thumb.
+    {
+        id tfz = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.twoFingerZoom"];
+        if (!tfz || [tfz boolValue]) {
+            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(scrolled:)];
+            pan.minimumNumberOfTouches = 2; pan.maximumNumberOfTouches = 2; pan.cancelsTouchesInView = YES;
+            pan.delegate = self;
+            [self addGestureRecognizer:pan];
+        } else glfwi_log("two-finger zoom: off");
+    }
     UITapGestureRecognizer *two = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingerTap:)];
     two.delegate = self;
     two.numberOfTouchesRequired = 2; [self addGestureRecognizer:two];
@@ -713,10 +905,10 @@ static void frame_rate_hint_start(void) {
     CGFloat L = MAX(in.left, 20), R = MAX(in.right, 20), B = MAX(in.bottom, 14), T = MAX(in.top, 10);
     for (UIView *v in self.subviews) {
         CGPoint np = CGPointZero;
-        if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm; else if ([v isKindOfClass:ZOVPadStick.class]) np = ((ZOVPadStick *)v).norm;
+        if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm; else if ([v isKindOfClass:ZOVPadStick.class]) np = ((ZOVPadStick *)v).norm; else if ([v isKindOfClass:ZOScrollStrip.class]) np = ((ZOScrollStrip *)v).norm;
         if (np.x != 0 || np.y != 0) {      // saved layout
-            CGFloat hw = v.bounds.size.width / 2;
-            v.center = CGPointMake(MIN(MAX(np.x * W, hw), W - hw), MIN(MAX(np.y * H, hw), H - hw));
+            CGFloat hw = v.bounds.size.width / 2, hh = v.bounds.size.height / 2;      // the scroll strip is tall, so keep the whole bar on screen
+            v.center = CGPointMake(MIN(MAX(np.x * W, hw), W - hw), MIN(MAX(np.y * H, hh), H - hh));
             continue;
         }
         switch (v.tag) {

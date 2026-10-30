@@ -6,7 +6,7 @@ import UIKit
 // MARK: - Touch layout model
 
 struct TouchItem: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
+    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
     var id: String
     var kind: Kind
     var label: String
@@ -14,7 +14,16 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var x: Double            // centre, as a fraction of the screen
     var y: Double
     var size: Double         // points
+    // Two-thumb options for key and mouse buttons (all off unless set):
+    var dragAim: Bool? = nil         // dragging a finger held on the button also moves the cursor: attack or shove while aiming
+    var fireMode: Int? = nil         // nil/0 held while pressed, 1 auto (re-pressed while held), 2 release (one press when the finger lifts)
+    var holdLock: Bool? = nil        // a long press keeps the button held until the next tap (e.g. RC for hands-free aiming)
+    var holdLockTime: Double? = nil  // seconds before that lock engages; nil = TouchItem.defaultHoldLockTime
+    var target: String? = nil        // fire mode toggle: id of the button whose fire mode it cycles
+    static let defaultHoldLockTime = 0.5
     var locked: Bool { kind == .hide || kind == .mode }
+    /// Half the width and height the control takes on screen (the scroll strip is a tall bar; everything else is round).
+    var halfSize: CGSize { kind == .scroll ? CGSize(width: size * 0.3, height: size * 1.1) : CGSize(width: size / 2, height: size / 2) }
     var isStick: Bool { kind == .stick || kind == .aimstick || kind == .padstick }   // HIDE and PAD/TCH can't be removed, or you could lose the controls
 }
 
@@ -199,6 +208,9 @@ struct TouchLayoutEditor: View {
     @State private var saveItem: DispatchWorkItem?
     @AppStorage("zom.aimAttackMode") private var aimAttackMode = 0          // aim joystick: 0 no attack, 1 one attack on release, 2 auto-attack while pushed
     @AppStorage("zom.mouseSens") private var mouseSens = 1.0       // cursor speed of PAD mode (1.0 = one point of cursor per point of finger); applies on the next start
+    @AppStorage("zom.dragAimSens") private var dragAimSens = 1.0   // cursor speed for drag-to-aim on buttons that have it switched on
+    @AppStorage("zom.scrollSpeed") private var scrollSpeed = 1.0   // scroll strip: wheel notches per 16 pt of finger travel
+    @AppStorage("zom.scrollInvert") private var scrollInvert = false
     @State private var presets: [TouchPreset] = []
     @State private var naming = false
     @State private var newName = ""
@@ -218,17 +230,18 @@ struct TouchLayoutEditor: View {
                 ForEach($layout.items) { $item in
                     // gesture goes on before .position, so each control's touch area is the control itself, not the whole screen
                     Chip(item: $item, selected: selected == item.id, opacity: layout.opacity)
-                        .contentShape(Circle())
+                        .contentShape(Capsule())      // a circle for round controls, the whole bar for the scroll strip
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas")).onChanged { v in
                             if selected != item.id { selected = item.id }
-                            let r = item.size / 2
-                            item.x = min(max(v.location.x, r), W - r) / W
-                            item.y = min(max(v.location.y, r), H - r) / H
+                            let r = item.halfSize
+                            item.x = min(max(v.location.x, r.width), W - r.width) / W
+                            item.y = min(max(v.location.y, r.height), H - r.height) / H
                         })
                         .position(x: item.x * W, y: item.y * H)
                 }
                 panel
                     .frame(width: min(360, W * 0.42))
+                    .frame(maxHeight: H - 16)                  // never taller than the screen; the panel scrolls instead
                     .offset(x: panelOffset.width + panelDrag.width, y: panelOffset.height + panelDrag.height)
             }
             .coordinateSpace(name: "canvas")
@@ -262,7 +275,8 @@ struct TouchLayoutEditor: View {
     // MARK: panel
 
     private var panel: some View {
-        VStack(spacing: 10) {
+        ScrollView {
+            VStack(spacing: 10) {
             HStack {
                 Text(pad ? "Virtual Gamepad" : "Touch Controls").font(.system(size: 15, weight: .bold))
                 Spacer()
@@ -284,6 +298,11 @@ struct TouchLayoutEditor: View {
                         Button("Mouse button") { add(.mouse, label: "CLK", code: 0) }
                         if !layout.items.contains(where: { $0.kind == .stick }) { Button("Joystick") { add(.stick, label: "", code: 0, size: 130) } }
                         if !layout.items.contains(where: { $0.kind == .aimstick }) { Button("Aim joystick") { add(.aimstick, label: "", code: 0, size: 130) } }
+                        if !layout.items.contains(where: { $0.kind == .scroll }) { Button("Scroll strip") { add(.scroll, label: "", code: 0, size: 70) } }   // slide up/down: mouse wheel at the cursor
+                        Button("Fire mode toggle") {      // switches one chosen button between Default and Release
+                            add(.firemode, label: "MODE", code: 0, size: 44)
+                            if let n = layout.items.indices.last { layout.items[n].target = layout.items.first { $0.kind == .mouse && $0.code == 0 }?.id }
+                        }
                         if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
                     }
                 } label: { pill("Add", system: "plus") }
@@ -304,7 +323,8 @@ struct TouchLayoutEditor: View {
 
             HStack {
                 Text("Opacity").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-                Slider(value: $layout.opacity, in: 0.3...1).tint(.white)
+                Slider(value: $layout.opacity, in: 0.05...1).tint(.white)      // 5% floor: still findable in the editor, and iOS ignores touches under 1%
+                Text(String(format: "%.0f%%", layout.opacity * 100)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
             }
             if !pad {
                 HStack {
@@ -318,10 +338,31 @@ struct TouchLayoutEditor: View {
                         Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
                     }
                 }
+                if layout.items.contains(where: { $0.dragAim == true }) {      // switched on per button: tap a button to edit
+                    HStack {
+                        Text("Drag speed").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                        Slider(value: $dragAimSens, in: 0.2...4, step: 0.1).tint(.white)
+                        Text(String(format: "%.1fx", dragAimSens)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
+                    }
+                }
+                if layout.items.contains(where: { $0.kind == .scroll }) {
+                    HStack {
+                        Text("Scroll speed").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                        Slider(value: $scrollSpeed, in: 0.3...3, step: 0.1).tint(.white)
+                        Text(String(format: "%.1fx", scrollSpeed)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
+                    }
+                    HStack {
+                        Text("Reverse scroll direction").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                        Spacer()
+                        Toggle("", isOn: $scrollInvert).labelsHidden().scaleEffect(0.8, anchor: .trailing)
+                    }
+                }
             }
 
             if let i = selectedIndex { inspector(i) }
+            }
         }
+        .scrollBounceBehavior(.basedOnSize)
         .padding(14)
         .background(Color(white: 0.11).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12), lineWidth: 1))
@@ -331,7 +372,7 @@ struct TouchLayoutEditor: View {
         let item = layout.items[i]
         Divider().overlay(Color.white.opacity(0.12))
         VStack(alignment: .leading, spacing: 8) {
-            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.kind == .padstick ? (item.code == 0 ? "Left stick" : "Right stick") : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
+            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.kind == .scroll ? "Scroll strip" : item.kind == .firemode ? "Fire mode toggle" : item.kind == .padstick ? (item.code == 0 ? "Left stick" : "Right stick") : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
             if item.kind == .padbtn || item.kind == .padtrig {
                 HStack {
                     Text("Acts as").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
@@ -383,6 +424,49 @@ struct TouchLayoutEditor: View {
                         .multilineTextAlignment(.center).font(.system(size: 13, weight: .semibold)).frame(width: 80, height: 28)
                         .background(Color.white.opacity(0.12), in: Capsule()).textInputAutocapitalization(.characters).autocorrectionDisabled()
                 }
+                // Two-thumb play: e.g. attack = drag to aim + Release (hold to aim, lift to swing once), shove = drag to aim + Auto.
+                HStack {
+                    Text("Drag to aim").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { layout.items[i].dragAim ?? false }, set: { layout.items[i].dragAim = $0 ? true : nil }))
+                        .labelsHidden().scaleEffect(0.8, anchor: .trailing)
+                }
+                HStack {
+                    Text("Long press to lock").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { layout.items[i].holdLock ?? false }, set: { layout.items[i].holdLock = $0 ? true : nil }))
+                        .labelsHidden().scaleEffect(0.8, anchor: .trailing)
+                }
+                if item.holdLock == true {
+                    let t = item.holdLockTime ?? TouchItem.defaultHoldLockTime
+                    HStack {
+                        Text("Lock after").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                        Slider(value: Binding(get: { t }, set: { v in layout.items[i].holdLockTime = abs(v - TouchItem.defaultHoldLockTime) < 0.001 ? nil : v }), in: 0.2...2.0, step: 0.1).tint(.white)
+                        Text(String(format: "%.1fs", t)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
+                    }
+                }
+                HStack {
+                    Text("Fire mode").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Picker("", selection: Binding(get: { layout.items[i].fireMode ?? 0 }, set: { layout.items[i].fireMode = $0 == 0 ? nil : $0 })) {
+                        Text("Default").tag(0); Text("Auto").tag(1); Text("Release").tag(2)
+                    }.pickerStyle(.segmented)
+                }
+            }
+            if item.kind == .firemode {
+                HStack {
+                    Text("Changes").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    Menu {
+                        ForEach(layout.items.filter { $0.kind == .key || $0.kind == .mouse }) { b in
+                            Button(buttonName(b)) { layout.items[i].target = b.id }
+                        }
+                    } label: {
+                        Text(layout.items.first { $0.id == item.target }.map(buttonName) ?? "Choose a button")
+                            .font(.system(size: 13, weight: .semibold)).padding(.horizontal, 12).frame(height: 28)
+                            .background(Color.white.opacity(0.12), in: Capsule())
+                    }
+                }
+                Text("Each tap in game switches that button between Default and Release.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
             }
             HStack {
                 Text("Size").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
@@ -406,6 +490,12 @@ struct TouchLayoutEditor: View {
         layout.items[i].kind = kind; layout.items[i].code = code; layout.items[i].label = String(label.prefix(5))
     }
 
+    /// "HIT (A)" style name of a button, for the fire mode toggle's target picker.
+    private func buttonName(_ b: TouchItem) -> String {
+        let sends = b.kind == .mouse ? KeyCatalog.mouse.first { $0.1 == b.code }?.0 ?? "Mouse" : KeyCatalog.name(key: b.code)
+        return b.label.isEmpty ? sends : "\(b.label) (\(sends))"
+    }
+
     private func add(_ kind: TouchItem.Kind, label: String, code: Int, size: Double = 62) {
         let item = TouchItem(id: UUID().uuidString, kind: kind, label: label, code: code, x: 0.5, y: 0.78, size: size)
         layout.items.append(item); selected = item.id
@@ -418,6 +508,22 @@ private struct Chip: View {
     let selected: Bool
     let opacity: Double
     var body: some View {
+        if item.kind == .scroll {
+            ZStack {
+                Capsule().fill(Color(white: 0.1).opacity(0.45))
+                Capsule().stroke(Color.white.opacity(0.6), lineWidth: 2)
+                VStack { Image(systemName: "chevron.up"); Spacer(); Image(systemName: "line.3.horizontal"); Spacer(); Image(systemName: "chevron.down") }
+                    .font(.system(size: item.size * 0.2, weight: .semibold)).foregroundStyle(.white.opacity(0.7)).padding(.vertical, item.size * 0.25)
+            }
+            .frame(width: item.size * 0.6, height: item.size * 2.2)
+            .opacity(opacity)
+            .overlay(Capsule().stroke(Color.white, lineWidth: selected ? 3 : 0).padding(-5))
+        } else {
+            roundChip
+        }
+    }
+
+    private var roundChip: some View {
         ZStack {
             Circle().fill(item.kind == .aimstick ? Color(red: 0.35, green: 0.08, blue: 0.06).opacity(0.45) : Color(white: 0.1).opacity(0.45))
             Circle().stroke(item.kind == .aimstick ? Color(red: 1, green: 0.55, blue: 0.5).opacity(0.7) : Color.white.opacity(0.6), lineWidth: 2)

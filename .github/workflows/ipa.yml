@@ -1,156 +1,106 @@
 name: IPA
 
-# Builds an unsigned (ad-hoc signed) IPA from this repository, the way scripts/make-ipa.sh does on a Mac.
+# Builds a test IPA from this repository's sources without needing the JRE, MetalANGLE sources, StikJIT or the game's
+# libraries: it compiles the touch overlay (libglfw.dylib) and the launcher executable here, then swaps them into an
+# official pziOS release IPA. Everything else (Java runtime, graphics libraries, JIT helper) stays as the release has
+# it, so the app keeps working and only the parts we changed are new. Runs on macos-15 with the Xcode it has; nothing
+# here needs Xcode 26.
 #
-# The device build needs compiled parts that are not in the repository (docs/BUILDING.md):
-#
-#   * runtime/ (the JRE and our native libraries, plus the game's converted libraries) and Frameworks/MetalANGLE.framework:
-#     taken from a pziOS release IPA by default. Set PZIOS_SOURCE_IPA_URL to use a different IPA, or PZIOS_BINARIES_URL
-#     to a zip whose top level holds runtime/ and Frameworks/ (your own build of them).
-#   * StikJIT.xcframework: downloaded from the StikJIT project's releases. Set PZIOS_STIKJIT_URL to use another build.
-#
-# The result contains that release's JRE and game libraries, so keep the artifact to yourself.
-# Every run leaves pziOS-ipa as an artifact; a tag push (v*) also attaches it to that release.
+# Idea from github.com/bradleyowenyoung-prog/PZIOS-Touch-Control- (same GPL-3 project).
+# Run it from the Actions tab ("IPA" -> Run workflow); the IPA appears under Artifacts.
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "pziOS release to patch (blank = the latest release)"
+        required: false
+        default: ""
   push:
     tags: ["v*"]
 
 jobs:
   ipa:
-    name: Unsigned IPA
-    # Xcode 26 or later: StikJIT.xcframework ships Swift 6.2 module interfaces (Swift::Error and friends), which older
-    # compilers cannot read. The launcher job stays on macos-15, where the UI target builds fine.
-    runs-on: macos-26
-    timeout-minutes: 45
-    permissions:
-      contents: write          # only used to attach the IPA to a release on tag pushes
+    name: Patched IPA
+    runs-on: macos-15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select the newest Xcode
+      - name: Use the newest Xcode on the runner
         run: |
-          set -euo pipefail
-          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "${LATEST:-}" ]; then sudo xcode-select -s "$LATEST/Contents/Developer"; fi
+          X=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] && sudo xcode-select -s "$X"
           xcodebuild -version
-          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
-          echo "iOS SDK $SDK"
-          if [ "${SDK%%.*}" -lt 26 ]; then
-            echo "::error::This runner has the iOS $SDK SDK. StikJIT.xcframework is built with Swift 6.2, so the IPA job needs Xcode 26 or later."
-            exit 1
-          fi
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Unpack the build inputs
-        env:
-          ZIP_URL: ${{ vars.PZIOS_BINARIES_URL }}
-          SOURCE_IPA_URL: ${{ vars.PZIOS_SOURCE_IPA_URL }}
-          STIKJIT_URL: ${{ vars.PZIOS_STIKJIT_URL }}
-        run: |
-          set -euo pipefail
-          rm -rf HostApp/runtime HostApp/Frameworks
-
-          if [ -n "${ZIP_URL:-}" ]; then
-            echo "Using PZIOS_BINARIES_URL"
-            mkdir -p "$RUNNER_TEMP/inputs"
-            curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/inputs/payload" "$ZIP_URL"
-            case "$ZIP_URL" in
-              *.zip) unzip -q -o "$RUNNER_TEMP/inputs/payload" -d "$RUNNER_TEMP/inputs" ;;
-              *)     tar -xzf "$RUNNER_TEMP/inputs/payload" -C "$RUNNER_TEMP/inputs" ;;
-            esac
-            [ -d "$RUNNER_TEMP/inputs/runtime" ]    && cp -R "$RUNNER_TEMP/inputs/runtime" HostApp/runtime
-            [ -d "$RUNNER_TEMP/inputs/Frameworks" ] && cp -R "$RUNNER_TEMP/inputs/Frameworks" HostApp/Frameworks
-          else
-            DEFAULT_IPA="https://github.com/onlyknt/pziOS/releases/download/pziOS/pziOS-0.9.0-beta.5-b42.21.ipa"
-            URL="${SOURCE_IPA_URL:-$DEFAULT_IPA}"
-            echo "Using the compiled parts of $URL"
-            curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/source.ipa" "$URL"
-            mkdir -p "$RUNNER_TEMP/source"
-            unzip -q "$RUNNER_TEMP/source.ipa" -d "$RUNNER_TEMP/source"
-
-            APP=$(find "$RUNNER_TEMP/source/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)
-            [ -n "$APP" ] || { echo "::error::The source IPA has no Payload/*.app"; exit 1; }
-            RUNTIME=$(find "$APP" -maxdepth 1 -type d -name runtime -print -quit)
-            [ -n "$RUNTIME" ] || { echo "::error::The source IPA has no runtime/ folder (the JRE and the native libraries)"; exit 1; }
-            cp -R "$RUNTIME" HostApp/runtime
-
-            mkdir -p HostApp/Frameworks
-            METAL=$(find "$APP" -maxdepth 3 -name 'MetalANGLE.framework' -type d -print -quit)
-            [ -n "$METAL" ] || { echo "::error::The source IPA has no MetalANGLE.framework"; exit 1; }
-            cp -R "$METAL" HostApp/Frameworks/
-          fi
-
-          # StikJIT has to be a real xcframework: the helper imports its Swift module to compile.
-          DEFAULT_STIKJIT="https://github.com/StikDebug/StikJIT/releases/download/1.9.0/StikJIT.xcframework.zip"
-          SJ_URL="${STIKJIT_URL:-$DEFAULT_STIKJIT}"
-          echo "Using StikJIT.xcframework from $SJ_URL"
-          mkdir -p "$RUNNER_TEMP/stikjit"
-          if curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/stikjit.zip" "$SJ_URL"; then
-            unzip -q -o "$RUNNER_TEMP/stikjit.zip" -d "$RUNNER_TEMP/stikjit"
-            XC=$(find "$RUNNER_TEMP/stikjit" -maxdepth 2 -name 'StikJIT.xcframework' -type d -print -quit)
-            if [ -n "$XC" ]; then
-              mkdir -p HostApp/Frameworks
-              rm -rf HostApp/Frameworks/StikJIT.xcframework
-              cp -R "$XC" HostApp/Frameworks/
-            else
-              echo "::warning::That StikJIT.xcframework.zip has no StikJIT.xcframework inside"
-            fi
-          else
-            echo "::warning::Could not download StikJIT.xcframework; falling back to the copy inside the source IPA"
-          fi
-          if [ ! -d HostApp/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework ] && [ -d "$RUNNER_TEMP/source/Payload" ]; then
-            APP="${APP:-$(find "$RUNNER_TEMP/source/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)}"
-            if [ -n "$APP" ]; then
-              STIK=$(find "$APP" -name 'StikJIT.framework' -type d -print -quit)
-              if [ -n "$STIK" ]; then
-                mkdir -p HostApp/Frameworks/StikJIT.xcframework/ios-arm64
-                cp -R "$STIK" HostApp/Frameworks/StikJIT.xcframework/ios-arm64/
-              fi
-            fi
-          fi
-
-          du -sh HostApp/runtime HostApp/Frameworks 2>/dev/null || true
-
-      - name: Check what the device build needs
-        run: |
-          set -u
-          missing=0
-          need() { if [ ! -e "$1" ]; then echo "missing: $1"; missing=1; fi; }
-          need HostApp/runtime/jre/lib/libjli.dylib
-          need HostApp/Frameworks/MetalANGLE.framework
-          need HostApp/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework
-          for l in libglfw libGLshim libgl4es_114 libEGLproxy libfmodhal libfmodhal_ca; do
-            need "HostApp/runtime/natives/$l.dylib"
-          done
-          if [ "$missing" = 1 ]; then
-            echo "::error::Those files are not in the repository (docs/BUILDING.md). Set PZIOS_BINARIES_URL to a zip whose top level holds runtime/ and Frameworks/, or PZIOS_SOURCE_IPA_URL to a pziOS IPA that contains them."
-            exit 1
-          fi
-
-      - name: Build the IPA
-        run: |
-          set -euo pipefail
-          chmod +x scripts/*.sh HostApp/sign_jre.sh
-          scripts/make-ipa.sh "$RUNNER_TEMP/pziOS.ipa"
-
-      - name: Upload the IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: pziOS-ipa
-          path: ${{ runner.temp }}/pziOS.ipa
-          if-no-files-found: error
-
-      - name: Attach the IPA to the release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Download and unpack the release IPA
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p dl x
+          gh release download ${TAG:+"$TAG"} --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
+          IPA=$(ls dl/*.ipa | grep -vi no-game-libs | head -1)
+          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa | head -1)
+          [ -n "$IPA" ] || { echo "::error::no IPA in that release"; exit 1; }
+          echo "using $IPA"
+          (cd x && unzip -q "../$IPA")
+          APP=$(ls -d "$PWD"/x/Payload/*.app | head -1)
+          [ -n "$APP" ] || { echo "::error::the IPA has no Payload/*.app"; exit 1; }
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Build the touch overlay (libglfw.dylib)
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
+            -dynamiclib -fobjc-arc -O2 -install_name @rpath/libglfw.dylib \
+            native/glfw-ios/glfw_ios.m \
+            -framework UIKit -framework Foundation -framework QuartzCore -framework Metal \
+            -framework CoreGraphics -framework ImageIO -framework GameController \
+            -o libglfw.dylib
+          lipo -archs libglfw.dylib
+
+      - name: Build the launcher executable
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          mkdir -p HostApp/Frameworks HostApp/runtime
+          cp -R "$APP/Frameworks/MetalANGLE.framework" HostApp/Frameworks/      # only linked against; the release copy stays in the IPA
+          # The JIT helper extension needs StikJIT, which is not in this repository: keep the release's own, unchanged extension.
+          sed -i '' '/^      - target: ZomJITHelper$/d' HostApp/project.yml
+          if grep -q "target: ZomJITHelper" HostApp/project.yml; then echo "::error::could not drop the JIT helper dependency"; exit 1; fi
+          (cd HostApp && xcodegen generate)
+          xcodebuild -project HostApp/pziOS.xcodeproj -target pziOS -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            PZ_BUNDLE_ID=com.knt.pzios PZ_TEAM_ID="" PZ_DISPLAY_NAME=pziOS build | tail -5
+          ls -la build/Release-iphoneos/pziOS.app/pziOS
+
+      - name: Swap the new parts into the IPA
         run: |
           set -euo pipefail
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Built from $GITHUB_SHA by the IPA workflow."
-          fi
-          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/pziOS.ipa" --clobber
+          T=$(find "$APP" -name libglfw.dylib -print -quit)
+          [ -n "$T" ] || { echo "::error::libglfw.dylib not found inside the IPA"; exit 1; }
+          echo "replacing $T"
+          # Warn about functions the release overlay exports and ours does not (features a test build would lose)
+          nm -gUj "$T" | sort > old-symbols.txt; nm -gUj libglfw.dylib | sort > new-symbols.txt
+          MISSING=$(comm -23 old-symbols.txt new-symbols.txt || true)
+          [ -z "$MISSING" ] || echo "::warning::the release overlay exports functions this build does not: $(echo $MISSING)"
+          cp libglfw.dylib "$T"; codesign -f -s - "$T"
+
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
+          # The app's entitlements (increased memory limit, debugger access for JIT) live in the release's signature: read them
+          # before anything is replaced, and sign with them at the end.
+          ENT="$PWD/app-entitlements.plist"
+          codesign -d --entitlements - --xml "$APP/$EXE" > "$ENT" 2>/dev/null || codesign -d --entitlements :- "$APP/$EXE" > "$ENT"
+          [ -s "$ENT" ] || { echo "::error::could not read the release app's entitlements"; exit 1; }
+          cp build/Release-iphoneos/pziOS.app/pziOS "$APP/$EXE"
+          codesign -f -s - --entitlements "$ENT" "$APP/$EXE"
+          codesign -f -s - "$APP"
+          codesign --verify --deep --strict "$APP"
+          (cd x && rm -f ../pziOS.ipa && zip -qry ../pziOS.ipa Payload)
+          ls -la pziOS.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pziOS-ipa
+          path: pziOS.ipa
+          if-no-files-found: error
