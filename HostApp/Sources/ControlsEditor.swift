@@ -183,9 +183,9 @@ enum TouchLayoutStore {
     }
     /// The bar of small keys along the top edge: inventory, health, map and light on the left, and the overlay's own controls on the right.
     private static let topBar: [(String, TouchItem.Kind, String, Int, Double, Double, Double)] = [
-        ("inv", .key, "INV", 73, 44, 30, 46), ("hp", .key, "HP", 72, 100, 30, 46),
-        ("map", .key, "MAP", 77, 156, 30, 46), ("lit", .key, "LIT", 70, 212, 30, 46),
-        ("mode", .mode, "PAD", 0, 268, 30, 46),
+        ("inv", .key, "INV", 73, 72, 30, 46), ("hp", .key, "HP", 72, 128, 30, 46),
+        ("map", .key, "MAP", 77, 184, 30, 46), ("lit", .key, "LIT", 70, 240, 30, 46),
+        ("mode", .mode, "PAD", 0, 296, 30, 46),
         ("esc", .key, "ESC", 256, 924, 30, 46), ("hide", .hide, "HIDE", 0, 868, 30, 46),
         ("kb", .keyboard, "KB", 0, 812, 30, 46), ("tab", .key, "TAB", 258, 756, 30, 46),
     ]
@@ -268,9 +268,9 @@ enum TouchLayoutStore {
             (.key, 85, "INFO", nil), (.key, 90, "SEAT", nil), (.key, 81, "HORN", nil),
         ]))
         l.items.append(contentsOf: [
-            TouchItem(id: "hb1", kind: .key, label: "1", code: 49, x: 320 / 956.0, y: 30 / 440.0, size: 46),
-            TouchItem(id: "hb2", kind: .key, label: "2", code: 50, x: 376 / 956.0, y: 30 / 440.0, size: 46),
-            TouchItem(id: "hb3", kind: .key, label: "3", code: 51, x: 432 / 956.0, y: 30 / 440.0, size: 46),
+            TouchItem(id: "hb1", kind: .key, label: "1", code: 49, x: 360 / 956.0, y: 30 / 440.0, size: 46),
+            TouchItem(id: "hb2", kind: .key, label: "2", code: 50, x: 416 / 956.0, y: 30 / 440.0, size: 46),
+            TouchItem(id: "hb3", kind: .key, label: "3", code: 51, x: 472 / 956.0, y: 30 / 440.0, size: 46),
         ])
         return l
     }
@@ -469,6 +469,7 @@ struct TouchLayoutEditor: View {
             }
             .coordinateSpace(name: "canvas")
         }
+        .ignoresSafeArea()      // the canvas is the whole screen, exactly as the in-game overlay sees it: safe-area-only sizing would shift every control
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
         .persistentSystemOverlays(.hidden)
