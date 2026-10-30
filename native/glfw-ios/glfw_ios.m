@@ -1342,6 +1342,27 @@ static NSString *vehicle_state_file(void) {
     return nil;
 }
 
+/// A second source for the same fact, in case a game build resolves getFileWriter somewhere unexpected: pziOSDrive.lua also
+/// prints a line to the game's output, which lands in jvm.log. The log is rotated at every start, so only this run's lines
+/// are in it; the last of the two markers wins.
+static NSString *log_vehicle_state(void) {
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count == 0) return nil;
+    NSString *path = [docs.firstObject stringByAppendingPathComponent:@"jvm.log"];
+    NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!h) return nil;
+    unsigned long long len = [h seekToEndOfFile];
+    [h seekToFileOffset:len > 65536 ? len - 65536 : 0];
+    NSData *d = [h readDataToEndOfFile];
+    [h closeFile];
+    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    if (!s) return nil;
+    NSRange car = [s rangeOfString:@"[pziOS] in a vehicle: driving layout" options:NSBackwardsSearch];
+    NSRange foot = [s rangeOfString:@"[pziOS] on foot: normal layout" options:NSBackwardsSearch];
+    if (car.location == NSNotFound && foot.location == NSNotFound) return nil;
+    return (car.location != NSNotFound && (foot.location == NSNotFound || car.location > foot.location)) ? @"1" : @"0";
+}
+
 /// The layout stored for the current mode: the gamepad layout when the virtual gamepad is on (it has no driving variant),
 /// otherwise the on-foot or driving touch layout.
 - (NSString *)layoutJSONDriving:(BOOL)driving {
@@ -1350,7 +1371,14 @@ static NSString *vehicle_state_file(void) {
     return [d stringForKey:(driving ? @"zom.drivingLayout" : @"zom.touchLayout")];
 }
 - (void)removeControlViews {
-    for (UIView *v in self.controls) [v removeFromSuperview];
+    [self releaseLatches];
+    for (UIView *v in self.controls) {          // nothing may stay held when its view goes away
+        if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
+        else if ([v isKindOfClass:ZOVPadStick.class]) [(ZOVPadStick *)v reset];
+        else if ([v isKindOfClass:ZOAimStick.class]) [(ZOAimStick *)v reset];
+        else if ([v isKindOfClass:ZORadial.class]) [(ZORadial *)v closeRing];
+        [v removeFromSuperview];
+    }
     [self.controls removeAllObjects];
     [self.hideButton removeFromSuperview]; self.hideButton = nil;
     [self.modeButton removeFromSuperview]; self.modeButton = nil;
@@ -1382,12 +1410,14 @@ static NSString *vehicle_state_file(void) {
     id autoPref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.drivingAuto"];
     if (autoPref && ![autoPref boolValue]) return;
     NSString *s = vehicle_state_file();
+    if (s.length == 0) s = log_vehicle_state();
     if (s.length == 0) return;
     NSInteger state = s.integerValue != 0 ? 1 : 0;
     // Only a *change* switches layouts, so pressing DRIVE or FOOT by hand is respected until you next get in or out of a
     // vehicle instead of being undone by the next poll.
     if (state == self.lastVehicleState) return;
     self.lastVehicleState = state;
+    if (state == (self.drivingActive ? 1 : 0)) return;      // already showing the right layout (e.g. the first "0")
     glfwi_log("vehicle: %s, switching to the %s layout", state ? "in a car" : "on foot", state ? "driving" : "on-foot");
     [self applyLayoutDriving:state == 1];
 }
