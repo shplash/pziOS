@@ -1,19 +1,42 @@
 name: Build
 
+# One workflow for everything pziOS needs from CI:
+#
+#   checks  the launcher UI target and the touch overlay, compiled (the device target needs the bundled JRE and
+#           MetalANGLE, which are not in the repository, so these are the compile checks)
+#   ipa     a testable IPA: this repository's overlay and launcher swapped into an official release IPA, which keeps
+#           that release's Java runtime, graphics libraries and JIT helper
+#
+# It starts on its own for pushes that touch code, and by hand from the Actions tab (with any release tag). The IPA is
+# uploaded as the pziOS-ipa artifact and attached to the draft "builds" release, so it can be downloaded like any other
+# release asset.
+#
+# The swap idea comes from github.com/bradleyowenyoung-prog/PZIOS-Touch-Control- (same GPL-3 project).
+
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths-ignore: ["docs/**", "licenses/**", "**/*.md"]
   pull_request:
     paths-ignore: ["docs/**", "licenses/**", "**/*.md"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "pziOS release to patch (blank = the latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  launcher:
-    name: Launcher UI (ZomUIPreview)
+  checks:
+    name: Compile checks
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -44,15 +67,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-  overlay:
-    name: On-screen overlay (libglfw)
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      # The same compile as the IPA workflow, so a change to the touch overlay is built by CI on every push instead of
-      # only being tried when an IPA is made. It needs nothing from the repository but the one source file.
+      # The same compile the IPA job does, so a change to the touch overlay is built on every push instead of only
+      # when an IPA is made. It needs nothing from the repository but the one source file.
       - name: Compile native/glfw-ios
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -63,3 +79,119 @@ jobs:
             -framework CoreGraphics -framework ImageIO -framework GameController \
             -o libglfw.dylib
           lipo -archs libglfw.dylib
+
+  ipa:
+    name: IPA
+    needs: checks
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode on the runner
+        run: |
+          X=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] && sudo xcode-select -s "$X"
+          xcodebuild -version
+
+      - name: Download and unpack the release IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir -p dl x
+          gh release download ${TAG:+"$TAG"} --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
+          IPA=$(ls dl/*.ipa | grep -vi no-game-libs | head -1)
+          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa | head -1)
+          [ -n "$IPA" ] || { echo "::error::no IPA in that release"; exit 1; }
+          echo "using $IPA"
+          (cd x && unzip -q "../$IPA")
+          APP=$(ls -d "$PWD"/x/Payload/*.app | head -1)
+          [ -n "$APP" ] || { echo "::error::the IPA has no Payload/*.app"; exit 1; }
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Build the touch overlay (libglfw.dylib)
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
+            -dynamiclib -fobjc-arc -O2 -install_name @rpath/libglfw.dylib \
+            native/glfw-ios/glfw_ios.m \
+            -framework UIKit -framework Foundation -framework QuartzCore -framework Metal \
+            -framework CoreGraphics -framework ImageIO -framework GameController \
+            -o libglfw.dylib
+          lipo -archs libglfw.dylib
+
+      - name: Build the launcher executable
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          mkdir -p HostApp/Frameworks HostApp/runtime
+          cp -R "$APP/Frameworks/MetalANGLE.framework" HostApp/Frameworks/      # only linked against; the release copy stays in the IPA
+          # The JIT helper extension needs StikJIT, which is not in this repository: keep the release's own, unchanged extension.
+          sed -i '' '/^      - target: ZomJITHelper$/d' HostApp/project.yml
+          if grep -q "target: ZomJITHelper" HostApp/project.yml; then echo "::error::could not drop the JIT helper dependency"; exit 1; fi
+          (cd HostApp && xcodegen generate)
+          xcodebuild -project HostApp/pziOS.xcodeproj -target pziOS -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            PZ_BUNDLE_ID=com.knt.pzios PZ_TEAM_ID="" PZ_DISPLAY_NAME=pziOS build | tail -5
+          ls -la build/Release-iphoneos/pziOS.app/pziOS
+
+      - name: Swap the new parts into the IPA
+        run: |
+          set -euo pipefail
+          T=$(find "$APP" -name libglfw.dylib -print -quit)
+          [ -n "$T" ] || { echo "::error::libglfw.dylib not found inside the IPA"; exit 1; }
+          echo "replacing $T"
+          # Warn about functions the release overlay exports and ours does not (features a test build would lose)
+          nm -gUj "$T" | sort > old-symbols.txt; nm -gUj libglfw.dylib | sort > new-symbols.txt
+          MISSING=$(comm -23 old-symbols.txt new-symbols.txt || true)
+          [ -z "$MISSING" ] || echo "::warning::the release overlay exports functions this build does not: $(echo $MISSING)"
+          cp libglfw.dylib "$T"; codesign -f -s - "$T"
+
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
+          # The app's entitlements (increased memory limit, debugger access for JIT) live in the release's signature: read them
+          # before anything is replaced, and sign with them at the end.
+          ENT="$PWD/app-entitlements.plist"
+          codesign -d --entitlements - --xml "$APP/$EXE" > "$ENT" 2>/dev/null || codesign -d --entitlements :- "$APP/$EXE" > "$ENT"
+          [ -s "$ENT" ] || { echo "::error::could not read the release app's entitlements"; exit 1; }
+          cp build/Release-iphoneos/pziOS.app/pziOS "$APP/$EXE"
+          codesign -f -s - --entitlements "$ENT" "$APP/$EXE"
+          codesign -f -s - "$APP"
+          codesign --verify --deep --strict "$APP"
+          (cd x && rm -f ../pziOS.ipa && zip -qry ../pziOS.ipa Payload)
+          ls -la pziOS.ipa
+          /usr/bin/unzip -t pziOS.ipa >/dev/null
+          /usr/bin/unzip -Z1 pziOS.ipa | grep -qx "Payload/$(basename "$APP")/Info.plist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pziOS-ipa
+          path: pziOS.ipa
+          if-no-files-found: error
+
+      # Same idea as the ModShelf repo: the draft "builds" release holds the newest IPA, so it can be downloaded from the
+      # Releases page instead of digging through Actions artifacts.
+      - name: Attach the IPA to the builds release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PLIST="$APP/Info.plist"
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST" 2>/dev/null || echo 0)
+          NAME="pziOS-$VERSION-$BUILD-${{ github.run_number }}.ipa"
+          cp pziOS.ipa "$NAME"
+          if ! gh release view builds --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create builds --draft --repo "$GITHUB_REPOSITORY" \
+              --title "pziOS builds" \
+              --notes "Draft release holding CI builds. It is never published, so only people with write access can see it."
+          fi
+          gh release upload builds "$NAME" --clobber --repo "$GITHUB_REPOSITORY"
+          echo "uploaded $NAME"
+          gh release view builds --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+            while read -r asset; do
+              [ -z "$asset" ] && continue
+              [ "$asset" = "$NAME" ] && continue
+              case "$asset" in
+                pziOS-*.ipa) gh release delete-asset builds "$asset" --yes --repo "$GITHUB_REPOSITORY" || true ;;
+              esac
+            done

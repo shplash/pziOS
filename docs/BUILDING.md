@@ -60,16 +60,16 @@ Set your own team and bundle identifier in `project.yml`. Install, then use the 
 
 ## 7. Building in CI
 
-`.github/workflows/build.yml` compiles the launcher UI target on every push that touches code (docs and Markdown are
-skipped), and compiles `native/glfw-ios/glfw_ios.m` the same way the IPA workflow does. The device target cannot be
-built from the repository alone, so these two are the compile checks for the Swift sources and the touch overlay.
+`.github/workflows/build.yml` is the only workflow, and it starts by itself on every push that touches code (docs and
+Markdown are skipped). It also has a "Run workflow" button for any release tag.
 
-`.github/workflows/ipa.yml` ("Patched IPA") produces a testable IPA without needing the JRE, MetalANGLE sources,
-StikJIT or the game's libraries: it compiles `libglfw.dylib` and the launcher executable from this repository, then
-swaps them into an official release IPA (chosen with the `release_tag` input, or the latest), keeping that release's
-runtime and JIT helper, and re-signs the app ad hoc with the release's entitlements. It runs on the standard macOS
-runner and needs no particular Xcode version. It starts by itself on pushes to `main` that touch `HostApp/` or the
-overlay, and can be run by hand from the Actions tab for any release; the result is the `pziOS-ipa` artifact.
+- **Compile checks**: the launcher UI target (every Swift source) and `native/glfw-ios/glfw_ios.m`, compiled the same
+  way the IPA job does. The device target cannot be built from the repository alone, so these are the compile checks.
+- **IPA**: builds `libglfw.dylib` and the launcher executable from this repository, swaps them into an official pziOS
+  release IPA (the `release_tag` input, or the latest), keeping that release's Java runtime, graphics libraries and JIT
+  helper, and re-signs the app ad hoc with the release's entitlements. It runs on the standard macOS runner and needs no
+  particular Xcode version. The IPA is uploaded as the `pziOS-ipa` artifact and attached to the draft **builds** release,
+  so it can be downloaded from the Releases page like any other release asset.
 
 `scripts/make-ipa.sh` remains the way to build a complete IPA from your own binaries (steps 1-5) on a Mac; the
 workflow above is the shortcut for testing launcher and overlay changes only.
