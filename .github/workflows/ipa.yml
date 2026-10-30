@@ -20,12 +20,27 @@ on:
 jobs:
   ipa:
     name: Unsigned IPA
-    runs-on: macos-15
+    # Xcode 26 or later: StikJIT.xcframework ships Swift 6.2 module interfaces (Swift::Error and friends), which older
+    # compilers cannot read. The launcher job stays on macos-15, where the UI target builds fine.
+    runs-on: macos-26
     timeout-minutes: 45
     permissions:
       contents: write          # only used to attach the IPA to a release on tag pushes
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select the newest Xcode
+        run: |
+          set -euo pipefail
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "${LATEST:-}" ]; then sudo xcode-select -s "$LATEST/Contents/Developer"; fi
+          xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK $SDK"
+          if [ "${SDK%%.*}" -lt 26 ]; then
+            echo "::error::This runner has the iOS $SDK SDK. StikJIT.xcframework is built with Swift 6.2, so the IPA job needs Xcode 26 or later."
+            exit 1
+          fi
 
       - name: Install XcodeGen
         run: brew install xcodegen
