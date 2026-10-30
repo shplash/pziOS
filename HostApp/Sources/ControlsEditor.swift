@@ -361,6 +361,8 @@ enum TouchLayoutStore {
             (.keyboard, 0, "KB"), (.hide, 0, "HIDE"),
         ]))
         l = with(l, "brake") { $0.holdLock = true }          // parking brake: tap once, it stays on
+        // Shift + W is cruise control in a car, so the movement stick must not push Run while driving.
+        l = with(l, "stick") { $0.stickPushKey = 0; $0.stickPush2Key = 0 }
         return icons(l)
     }
 
@@ -1061,7 +1063,7 @@ struct TouchLayoutEditor: View {
                                in: 0.6...1.5, step: 0.01).tint(.white)
                     }
                 }
-                Text("Sends the keyboard's own keys, with a dead zone so a resting thumb does not move you. Push past the first mark to Run, and drag beyond the stick's edge (over 100%) to Sprint at the second; both marks are drawn on the stick.")
+                Text("Sends the keyboard's own keys, with a dead zone so a resting thumb does not move you. Push past the first mark to Run, and drag beyond the stick's edge (over 100%) to Sprint at the second; both marks are drawn on the stick. In a vehicle Shift + W is cruise control, so turn the stages off (or use the Driving preset) when you drive.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
