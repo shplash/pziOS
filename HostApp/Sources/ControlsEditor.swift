@@ -916,123 +916,159 @@ struct TouchLayoutEditor: View {
         }
     }
 
+    // MARK: panel
+
+    /// The panel is assembled from small, type-erased sections instead of one big view-builder result. As a single result
+    /// its type was deeply nested enough that the first render of this sheet overflowed the Swift type demangler's stack
+    /// (SIGSEGV inside ScrollView.init, see the crash on opening the controls editor). Every section now keeps its own
+    /// small type and AnyView joins them, so nothing this screen builds is deep in the type system.
     private var panel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: M.section) {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        Text(pad ? "Virtual Gamepad" : (driving ? "Driving controls" : "Touch Controls")).font(.system(size: 15, weight: .bold))
-                        if !currentPreset.isEmpty {
-                            Text(currentPreset).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
-                                .lineLimit(1).minimumScaleFactor(0.7)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    // Only the title area drags the panel, so the buttons beside it still get their taps.
-                    .simultaneousGesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { panelDrag = $0.translation }.onEnded { v in
-                        panelOffset.width += v.translation.width; panelOffset.height += v.translation.height; panelDrag = .zero
-                    })
-                    Spacer(minLength: 4)
-                    Button {
-                        Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = true }
-                    } label: {
-                        Image(systemName: "eye.slash").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
-                    }.buttonStyle(.plain)
-                    Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.4))
-                }
-                .frame(height: M.control)
-
-                // Two even columns instead of four squeezed pills.
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: M.gap), GridItem(.flexible(), spacing: M.gap)], spacing: M.gap) {
-                    addMenu
-                    Button {
-                        Haptics.tap()
-                        layout = slotDriving ? TouchLayoutStore.drivingDefaultLayout
-                                             : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
-                        TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); selected = nil
-                        currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
-                    } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
-                    if !pad { presetsMenu }
-                    savedMenu
-                    Button { Haptics.tap(); dismiss() } label: { actionPill("Done", system: "checkmark", filled: true) }.buttonStyle(PressStyle())
-                }
-
-                if !pad {
-                    sectionTitle("Editing")
-                    Picker("", selection: $driving) {
-                        Text("On foot").tag(false); Text("Driving").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: driving) { _, _ in switchSlot() }
-                    Divider().overlay(Color.white.opacity(0.06))
-                }
-
-                VStack(alignment: .leading, spacing: M.gap) {
-                    sectionTitle("Layout")
-                    row("Opacity", value: String(format: "%.0f%%", layout.opacity * 100)) {
-                        Slider(value: $layout.opacity, in: 0.05...1).tint(.white)      // 5% floor: still findable, and iOS ignores touches under 1%
-                    }
-                    if layout.opacity < 0.22 {
-                        Text("Below 22% the editor shows the controls a little stronger so you can still find them; the game uses the exact value.")
-                            .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.42))
-                            .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                    }
-                    toggleRow("Show guides", $showGuides)
-                    toggleRow("Icons on buttons", $iconsOn)
-                }
-
-                if !pad {
-                    VStack(alignment: .leading, spacing: M.gap) {
-                        sectionTitle("Touch")
-                        row("Sensitivity", value: String(format: "%.1fx", mouseSens)) {
-                            Slider(value: $mouseSens, in: 0.2...4, step: 0.1).tint(.white)
-                        }
-                        if layout.items.contains(where: { $0.dragAim == true }) {
-                            row("Drag speed", value: String(format: "%.1fx", dragAimSens)) {
-                                Slider(value: $dragAimSens, in: 0.2...4, step: 0.1).tint(.white)
-                            }
-                        }
-                        if layout.items.contains(where: { $0.kind == .aimstick }) {
-                            row("Aim attack") {
-                                Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
-                            }
-                        }
-                        if layout.items.contains(where: { $0.kind == .scroll }) {
-                            row("Scroll speed", value: String(format: "%.1fx", scrollSpeed)) {
-                                Slider(value: $scrollSpeed, in: 0.3...3, step: 0.1).tint(.white)
-                            }
-                            row("Scroll sens", value: String(format: "%.1fx", scrollSens)) {
-                                Slider(value: $scrollSens, in: 0.3...4, step: 0.1).tint(.white)
-                            }
-                            toggleRow("Reverse scroll", $scrollInvert)
-                            toggleRow("Momentum", $scrollMomentum)
-                        }
-                    }
-                }
-
-                if let i = selectedIndex {
-                    VStack(alignment: .leading, spacing: M.gap) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "slider.horizontal.3").font(.system(size: 10, weight: .semibold))
-                            Text("SELECTED CONTROL").font(.system(size: 9.5, weight: .bold)).tracking(0.8)
-                            Spacer()
-                            Button { Haptics.tap(); selected = nil } label: {
-                                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                            }.buttonStyle(.plain)
-                        }
-                        .foregroundStyle(.white.opacity(0.42))
-                        inspector(i)
-                    }
-                    .padding(10)
-                    .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
-                }
+                panelHeader
+                panelActions
+                panelEditing
+                panelLayoutSettings
+                panelTouchSettings
+                panelSelectedControl
             }
         }
         .scrollBounceBehavior(.basedOnSize)
         .padding(14)
         .background(Color(white: 0.11).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private var panelHeader: AnyView {
+        AnyView(
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Text(pad ? "Virtual Gamepad" : (driving ? "Driving controls" : "Touch Controls")).font(.system(size: 15, weight: .bold))
+                    if !currentPreset.isEmpty {
+                        Text(currentPreset).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
+                }
+                .contentShape(Rectangle())
+                // Only the title area drags the panel, so the buttons beside it still get their taps.
+                .simultaneousGesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { panelDrag = $0.translation }.onEnded { v in
+                    panelOffset.width += v.translation.width; panelOffset.height += v.translation.height; panelDrag = .zero
+                })
+                Spacer(minLength: 4)
+                Button {
+                    Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = true }
+                } label: {
+                    Image(systemName: "eye.slash").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+                }.buttonStyle(.plain)
+                Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.4))
+            }
+            .frame(height: M.control)
+        )
+    }
+
+    private var panelActions: AnyView {
+        AnyView(
+            // Two even columns instead of four squeezed pills.
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: M.gap), GridItem(.flexible(), spacing: M.gap)], spacing: M.gap) {
+                addMenu
+                Button {
+                    Haptics.tap()
+                    layout = slotDriving ? TouchLayoutStore.drivingDefaultLayout
+                                         : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
+                    TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); selected = nil
+                    currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
+                } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
+                if !pad { presetsMenu }
+                savedMenu
+                Button { Haptics.tap(); dismiss() } label: { actionPill("Done", system: "checkmark", filled: true) }.buttonStyle(PressStyle())
+            }
+        )
+    }
+
+    private var panelEditing: AnyView {
+        guard !pad else { return AnyView(EmptyView()) }
+        return AnyView(
+            VStack(alignment: .leading, spacing: M.gap) {
+                sectionTitle("Editing")
+                Picker("", selection: $driving) {
+                    Text("On foot").tag(false); Text("Driving").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: driving) { _, _ in switchSlot() }
+                Divider().overlay(Color.white.opacity(0.06))
+            }
+        )
+    }
+
+    private var panelLayoutSettings: AnyView {
+        AnyView(
+            VStack(alignment: .leading, spacing: M.gap) {
+                sectionTitle("Layout")
+                row("Opacity", value: String(format: "%.0f%%", layout.opacity * 100)) {
+                    Slider(value: $layout.opacity, in: 0.05...1).tint(.white)      // 5% floor: still findable, and iOS ignores touches under 1%
+                }
+                if layout.opacity < 0.22 {
+                    Text("Below 22% the editor shows the controls a little stronger so you can still find them; the game uses the exact value.")
+                        .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.42))
+                        .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                }
+                toggleRow("Show guides", $showGuides)
+                toggleRow("Icons on buttons", $iconsOn)
+            }
+        )
+    }
+
+    private var panelTouchSettings: AnyView {
+        guard !pad else { return AnyView(EmptyView()) }
+        return AnyView(
+            VStack(alignment: .leading, spacing: M.gap) {
+                sectionTitle("Touch")
+                row("Sensitivity", value: String(format: "%.1fx", mouseSens)) {
+                    Slider(value: $mouseSens, in: 0.2...4, step: 0.1).tint(.white)
+                }
+                if layout.items.contains(where: { $0.dragAim == true }) {
+                    row("Drag speed", value: String(format: "%.1fx", dragAimSens)) {
+                        Slider(value: $dragAimSens, in: 0.2...4, step: 0.1).tint(.white)
+                    }
+                }
+                if layout.items.contains(where: { $0.kind == .aimstick }) {
+                    row("Aim attack") {
+                        Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
+                    }
+                }
+                if layout.items.contains(where: { $0.kind == .scroll }) {
+                    row("Scroll speed", value: String(format: "%.1fx", scrollSpeed)) {
+                        Slider(value: $scrollSpeed, in: 0.3...3, step: 0.1).tint(.white)
+                    }
+                    row("Scroll sens", value: String(format: "%.1fx", scrollSens)) {
+                        Slider(value: $scrollSens, in: 0.3...4, step: 0.1).tint(.white)
+                    }
+                    toggleRow("Reverse scroll", $scrollInvert)
+                    toggleRow("Momentum", $scrollMomentum)
+                }
+            }
+        )
+    }
+
+    private var panelSelectedControl: AnyView {
+        guard let i = selectedIndex else { return AnyView(EmptyView()) }
+        return AnyView(
+            VStack(alignment: .leading, spacing: M.gap) {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 10, weight: .semibold))
+                    Text("SELECTED CONTROL").font(.system(size: 9.5, weight: .bold)).tracking(0.8)
+                    Spacer()
+                    Button { Haptics.tap(); selected = nil } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    }.buttonStyle(.plain)
+                }
+                .foregroundStyle(.white.opacity(0.42))
+                inspector(i)
+            }
+            .padding(10)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
+        )
     }
 
     private var addMenu: some View {
@@ -1110,28 +1146,52 @@ struct TouchLayoutEditor: View {
         } label: { actionPill("Saved", system: "square.stack") }
     }
 
-    @ViewBuilder private func inspector(_ i: Int) -> some View {
+    /// The selected control's card. Its rows are split by kind into separate small view types and joined with AnyView: one
+    /// builder result holding every kind at once was part of the type that overflowed the demangler (see the note on `panel`).
+    private func inspector(_ i: Int) -> AnyView {
         let item = layout.items[i]
-        VStack(alignment: .leading, spacing: M.gap) {
-            sectionTitle(itemTitle(item))
-            if item.kind != .stick && item.kind != .aimstick && item.kind != .scroll && item.kind != .padstick && item.kind != .mode {
-                iconRow(i)
+        return AnyView(
+            VStack(alignment: .leading, spacing: M.gap) {
+                sectionTitle(itemTitle(item))
+                if item.kind != .stick && item.kind != .aimstick && item.kind != .scroll && item.kind != .padstick && item.kind != .mode {
+                    iconRow(i)
+                }
+                inspectorKindRows(i, item)
+                inspectorSharedRows(i, item)
             }
-            if item.kind == .padbtn || item.kind == .padtrig {
+        )
+    }
+
+    /// The rows that belong to one kind of control, each in its own small builder so they do not all share one type.
+    private func inspectorKindRows(_ i: Int, _ item: TouchItem) -> AnyView {
+        if item.kind == .padbtn || item.kind == .padtrig { return AnyView(padButtonRows(i, item)) }
+        if item.kind == .padstick { return AnyView(padStickRows(i)) }
+        if item.kind == .stick { return AnyView(stickRows(i, item)) }
+        if item.kind == .key || item.kind == .mouse { return AnyView(keyRows(i, item)) }
+        if item.kind == .firemode { return AnyView(fireModeRows(i, item)) }
+        if item.kind == .combo { return AnyView(comboRows(i, item)) }
+        if item.kind == .drive { return AnyView(driveRows(i)) }
+        if item.kind == .radial { return AnyView(radialEditor(i)) }
+        return AnyView(EmptyView())
+    }
+
+    @ViewBuilder private func padButtonRows(_ i: Int, _ item: TouchItem) -> some View {
                 row("Acts as") {
                     Menu {
                         ForEach(PadCatalog.buttons, id: \.1) { e in Button(e.0) { layout.items[i].kind = .padbtn; layout.items[i].code = e.1; layout.items[i].label = e.2 } }
                         ForEach(PadCatalog.triggers, id: \.1) { e in Button(e.0) { layout.items[i].kind = .padtrig; layout.items[i].code = e.1; layout.items[i].label = e.2 } }
                     } label: { field { Text(PadCatalog.name(for: item)) } }
                 }
-            }
-            if item.kind == .padstick {
+    }
+
+    @ViewBuilder private func padStickRows(_ i: Int) -> some View {
                 row("Acts as") {
                     Picker("", selection: Binding(get: { layout.items[i].code }, set: { layout.items[i].code = $0 })) { Text("Left").tag(0); Text("Right").tag(1) }
                         .pickerStyle(.segmented).frame(width: 150)
                 }
-            }
-            if item.kind == .stick {
+    }
+
+    @ViewBuilder private func stickRows(_ i: Int, _ item: TouchItem) -> some View {
                 row("Moves") {
                     Picker("", selection: Binding(get: { (layout.items[i].stickArrows ?? false) ? 1 : 0 },
                                                   set: { layout.items[i].stickArrows = $0 == 1 ? true : nil })) {
@@ -1188,8 +1248,9 @@ struct TouchLayoutEditor: View {
                 Text("Sends the keyboard's own keys, with a dead zone so a resting thumb does not move you. Push past the first mark to Run, and drag beyond the stick's edge (over 100%) to Sprint at the second; both marks are drawn on the stick. In a vehicle Shift + W is cruise control, so turn the stages off (or use the Driving preset) when you drive.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            }
-            if item.kind == .key || item.kind == .mouse {
+    }
+
+    @ViewBuilder private func keyRows(_ i: Int, _ item: TouchItem) -> some View {
                 row("Sends") {
                     Menu {
                         ForEach(KeyCatalog.groups, id: \.0) { group in
@@ -1227,8 +1288,9 @@ struct TouchLayoutEditor: View {
                         Text("Default").tag(0); Text("Auto").tag(1); Text("Release").tag(2)
                     }.pickerStyle(.segmented)
                 }
-            }
-            if item.kind == .firemode {
+    }
+
+    @ViewBuilder private func fireModeRows(_ i: Int, _ item: TouchItem) -> some View {
                 row("Changes") {
                     Menu {
                         ForEach(layout.items.filter { $0.kind == .key || $0.kind == .mouse }) { b in
@@ -1239,8 +1301,9 @@ struct TouchLayoutEditor: View {
                 Text("Each tap in game switches that button between Default and Release.")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            }
-            if item.kind == .combo {
+    }
+
+    @ViewBuilder private func comboRows(_ i: Int, _ item: TouchItem) -> some View {
                 row("Sends") {
                     Menu {
                         ForEach(KeyCatalog.groups, id: \.0) { group in
@@ -1274,8 +1337,9 @@ struct TouchLayoutEditor: View {
                 Text("Both keys are held while the button is pressed. The game uses Shift+W for cruise control (and Shift+S to slow down), which is what the driving layout's C+ / C- buttons send.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            }
-            if item.kind == .drive {
+    }
+
+    @ViewBuilder private func driveRows(_ i: Int) -> some View {
                 row("Label") {
                     TextField("Label", text: Binding(get: { layout.items[i].label }, set: { layout.items[i].label = String($0.prefix(5)).uppercased() }))
                         .multilineTextAlignment(.center)
@@ -1286,8 +1350,10 @@ struct TouchLayoutEditor: View {
                 Text("Each tap switches between the on-foot layout and the driving one. With \"Switch in a vehicle\" on, the game's vehicle state does it for you (pziOSDrive.lua writes the marker the overlay watches).")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            }
-            if item.kind == .radial { radialEditor(i) }
+    }
+
+    /// Size and the buttons every control has, whatever it sends.
+    @ViewBuilder private func inspectorSharedRows(_ i: Int, _ item: TouchItem) -> some View {
             row("Size", value: String(format: "%.0f", item.size)) {
                 Slider(value: Binding(get: { layout.items[i].size }, set: { layout.items[i].size = $0 }),
                        in: item.kind == .scroll ? 40.0...90.0 : (item.isStick ? 90.0 : 36.0)...(item.isStick ? 200.0 : 110.0))
@@ -1302,7 +1368,10 @@ struct TouchLayoutEditor: View {
                     .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
             }.buttonStyle(PressStyle())
             // A control that came with the layout can be put back exactly as it shipped, instead of being deleted and re-added by hand.
-            if let original = (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout).items.first(where: { $0.id == item.id }),
+            // The driving layout has its own shipped defaults.
+            let shipped = slotDriving ? TouchLayoutStore.drivingDefaultLayout
+                                      : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
+            if let original = shipped.items.first(where: { $0.id == item.id }),
                original != item {
                 Button {
                     Haptics.tap(); layout.items[i] = original
@@ -1319,7 +1388,6 @@ struct TouchLayoutEditor: View {
                         .background(Color.red.opacity(0.18), in: Capsule()).foregroundStyle(Color.red)
                 }.buttonStyle(PressStyle())
             }
-        }
     }
 
     /// The icon the control draws instead of its text. "Text only" clears it; a name the running iOS does not have falls
