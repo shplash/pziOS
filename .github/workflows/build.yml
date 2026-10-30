@@ -43,3 +43,23 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+  overlay:
+    name: On-screen overlay (libglfw)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same compile as the IPA workflow, so a change to the touch overlay is built by CI on every push instead of
+      # only being tried when an IPA is made. It needs nothing from the repository but the one source file.
+      - name: Compile native/glfw-ios
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
+            -dynamiclib -fobjc-arc -O2 -install_name @rpath/libglfw.dylib \
+            native/glfw-ios/glfw_ios.m \
+            -framework UIKit -framework Foundation -framework QuartzCore -framework Metal \
+            -framework CoreGraphics -framework ImageIO -framework GameController \
+            -o libglfw.dylib
+          lipo -archs libglfw.dylib

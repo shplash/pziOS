@@ -61,8 +61,8 @@ Set your own team and bundle identifier in `project.yml`. Install, then use the 
 ## 7. Building in CI
 
 `.github/workflows/build.yml` compiles the launcher UI target on every push that touches code (docs and Markdown are
-skipped). The device target cannot be built from the repository alone, so this is the compile check for the Swift
-sources.
+skipped), and compiles `native/glfw-ios/glfw_ios.m` the same way the IPA workflow does. The device target cannot be
+built from the repository alone, so these two are the compile checks for the Swift sources and the touch overlay.
 
 `.github/workflows/ipa.yml` ("Patched IPA") produces a testable IPA without needing the JRE, MetalANGLE sources,
 StikJIT or the game's libraries: it compiles `libglfw.dylib` and the launcher executable from this repository, then
