@@ -1457,6 +1457,7 @@ static void fps_note_frame(void) {
             BOOL trig = [kind isEqualToString:@"padtrig"];
             ZOButton *pb = [ZOButton buttonWithTitle:label kind:(trig ? 6 : 5) code:code size:size];
             pb.norm = norm; pb.alpha = alpha; pb.tag = tag++;
+            pb.iconName = icon; [pb refreshIcon];                  // the editor can put a symbol on a pad button too
             [self addSubview:pb]; [self.controls addObject:pb]; continue;
         }
         int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 7 : [kind isEqualToString:@"drive"] ? 8 : [kind isEqualToString:@"combo"] ? 9 : -1;
