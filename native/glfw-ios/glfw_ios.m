@@ -804,6 +804,24 @@ static void frame_rate_hint_start(void) {
     glfwi_log("frame rate hint: requesting up to 120 Hz (max display %ld Hz)", (long)UIScreen.mainScreen.maximumFramesPerSecond);
 }
 
+// FPS counter (Tools > Show FPS): a small label in the corner of the game screen, counted at the buffer swap. It is not part of
+// the on-screen controls, so HIDE and the automatic hiding for a controller leave it alone.
+static UILabel *g_fpsLabel;
+static double g_fpsStart;
+static int g_fpsFrames;
+static void fps_note_frame(void) {
+    if (!g_fpsLabel) return;
+    double now = CACurrentMediaTime();
+    if (g_fpsStart <= 0) { g_fpsStart = now; g_fpsFrames = 0; return; }
+    g_fpsFrames++;
+    double dt = now - g_fpsStart;
+    if (dt < 0.5) return;                     // twice a second reads fine and costs nothing measurable
+    double fps = g_fpsFrames / dt;
+    g_fpsStart = now; g_fpsFrames = 0;
+    NSString *text = [NSString stringWithFormat:@"%.0f fps · %.1f ms", fps, fps > 0 ? 1000.0 / fps : 0];
+    dispatch_async(dispatch_get_main_queue(), ^{ g_fpsLabel.text = text; });     // UILabel is main-thread only
+}
+
 @implementation GLFWiOSView
 + (Class)layerClass { return [CAMetalLayer class]; }
 - (BOOL)canBecomeFirstResponder { return YES; }
@@ -1085,6 +1103,21 @@ static void frame_rate_hint_start(void) {
     [self.layer addSublayer:self.cursorLayer];
     [self moveCursorTo:CGPointMake(self.bounds.size.width / 2, self.bounds.size.height / 2)];
     self.controls = [NSMutableArray array];
+    // The FPS label goes in before the saved layout, which can be missing on a fresh install.
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"zom.fpsCounter"]) {
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(10, 8, 122, 22)];
+        l.text = @"— fps";
+        l.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightSemibold];
+        l.textColor = UIColor.whiteColor;
+        l.textAlignment = NSTextAlignmentCenter;
+        l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+        l.layer.cornerRadius = 6; l.layer.masksToBounds = YES;
+        l.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
+        l.userInteractionEnabled = NO;
+        [self addSubview:l];
+        g_fpsLabel = l;
+        glfwi_log("fps counter: drawing the frame rate in the top-left corner");
+    }
     if ([self installSavedLayout]) { _padConnected = pad_any_connected(); [self updateControlVisibility]; [self setNeedsLayout]; return; }
     ZOJoystick *js = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, 130, 130)]; js.tag = 1; [self addSubview:js]; [self.controls addObject:js];
     struct { const char *t; int kind, code; int tag; } defs[] = {
@@ -1781,6 +1814,7 @@ GLFW_API void glfwSwapBuffers(GLFWwindow *w) {
     static int n; static __thread void *pool; static int usePool = -1;
     if (n++ == 0) { log_gl4es_images("first swap"); const char *e = getenv("ZOMIOS_FRAMEPOOL"); usePool = e && atoi(e) > 0; glfwi_log("per-frame autorelease pool %s", usePool ? "on" : "off"); }
     maybe_screenshot(w); if (w) egl.SwapBuffers(g_dpy, w->surface);
+    if (g_fpsLabel) fps_note_frame();
     if (usePool > 0) { if (pool) objc_autoreleasePoolPop(pool); pool = objc_autoreleasePoolPush(); }
 }
 GLFW_API void glfwSwapInterval(int i) { if (egl.SwapInterval) egl.SwapInterval(g_dpy, i); }

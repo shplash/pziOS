@@ -47,79 +47,17 @@ step exists.
 
 ## Features
 
-**Your own copy of the game.** Solo, mods, saves and direct-connect multiplayer. pziOS ships no game content; you
-import yours.
-
-**Runtime**
-- Native **OpenJDK 25 for iOS**: the game's Java runs in-process, with no emulation layer underneath it.
-- **JIT either way**: manual (run the bundled script in StikDebug) or built-in (a pairing file and the helper
-  extension). The classic code-cache path is chosen automatically on iOS 17 and 18, JIT can be tested from the
-  launcher, and the Developer Disk Image cache can be reset.
-- **Memory tiers** picked from what iOS actually grants the app, plus **Increased Memory** (the Java heap held in
-  helper processes) at 3–6 GB for devices that can spare it.
-- **Four garbage collectors** — Parallel, pzGC, SGC and pzSGC — each explained where you choose it, and each a trial
-  that falls back to Parallel by itself if the game then fails to start.
-- **Three JIT compiler tiers** (C1, C1+C2 gentle, C1+C2 full), with the code-cache thresholds tuned to match.
-
-**Graphics**
-- gl4es and MetalANGLE by default, plus an experimental **Zink** backend (desktop OpenGL 4.5 over MoltenVK) for mods
-  that need it, with a feature probe and a performance log.
-- **ASTC texture compression** on the GPU with a persistent disk cache, a texture-shrink preset, and optional 2×
-  (high definition) texture packs.
-- Render resolution at **540p, 720p, 900p or 1080p**, ProMotion up to **120 Hz**, and a simulated aspect ratio for
-  checking iPad layouts on a phone.
-- Game options applied on every launch: `texture2x` follows your setting whenever the high definition packs are
-  installed, and the game's preview videos stay off because the library they need is macOS-only.
-- The game's macOS **FMOD** libraries bridged onto iOS audio, with the audio session configured before it starts.
-
-**Game files**
-- **Import a zip or a folder**: the importer finds `projectzomboid.jar`, then the data folder beside it that holds
-  `media/`, and copies only what the game needs — Mac executables, libraries and Finder clutter are skipped.
-- **Resumable and cancellable**: files are written as `.part` and moved into place, unchanged files are skipped, so
-  starting again continues where it stopped. Free space is checked before it begins.
-- A **native-library check** compares the imported game's libraries with the ones built into the app and says so if
-  the game has been updated beyond what this build supports.
-- The **Project Zomboid version** is read from the game and tied to a fingerprint of the installed jar, so a stale
-  number is never shown. Game files and saves stay out of iCloud backup.
-
-**Touch controls**
-- A real **layout editor**: drag, resize, add, delete and relabel controls, set opacity from 5% to 100%, and save
-  named layouts to switch between. Keyboard/mouse and virtual-gamepad layouts are edited separately.
-- **Two-thumb play**: for any attack or shove button, *drag to aim* (dragging the held button also moves the cursor,
-  at its own speed), *hold to lock* (the button stays held after you lift, e.g. for hands-free aiming) and *fire
-  modes* (Default, Auto, Release). A **fire-mode toggle** control switches a chosen button between Default and
-  Release in game.
-- A **scroll strip** for containers and zoom, a **radial menu** holding 2–8 options in four shapes (ring, arc, column,
-  row), and an **aim stick** with Off / Release / Auto attacks.
-- **PAD and TCH pointer modes** (relative drag with tap, long press and two-finger right click, or direct touch), with
-  a cursor speed setting and the two-finger zoom available or off.
-- A **virtual gamepad**: the on-screen controls can drive a controller the game sees as real (two sticks, A/B/X/Y,
-  d-pad, bumpers, triggers), with Xbox or PlayStation button names.
-- On-screen controls **hide automatically** while a controller, or a keyboard and mouse together, are connected —
-  or stay if you prefer.
-
-**Real controllers**
-- Any extended gamepad, hot-plugged at any time, **remappable** down to every button and axis, triggers usable as
-  buttons, a **stick deadzone** (0–95%), **A/B swap** for Nintendo-style pads, a **live input preview** with battery
-  level, and DualSense/DualShock touchpads that work as a mouse.
-- The launcher itself can be navigated with a pad.
-
-**Launcher**
-- A home screen that tells you what matters: game files and build, JIT state, connected controller and battery,
-  memory tier, and whether you are ready to play.
-- Settings grouped by purpose, with the reason for every value spelled out, developer options behind a confirmation,
-  and a Log page whose output you can share.
-- A three-step **setup guide** with import progress, and a **screen margin editor** with a HUD preview.
-
-**Diagnostics**
-- `jvm.log` in the app's folder, rotated to `jvm-last.log` at every start so a crash survives a restart, plus
-  optional memory logging and GPU texture accounting, and a Zink feature probe report.
-
-**Building**
-- An `xcodegen` project and scripts to build the native libraries, prepare and inject the game's libraries, build and
-  sign an IPA, and rebuild for a different game build.
-- CI that compiles the launcher on every push, and a workflow that builds the overlay and launcher and splices them
-  into a release IPA for testing.
+- **Play your own copy**: solo, mods, saves, direct-connect multiplayer.
+- **Touch controls**: a full layout editor — two-thumb aiming (drag to aim, hold to lock, fire modes), a scroll
+  strip, radial menus, an aim stick, saved layouts, and a virtual gamepad the game sees as a real controller.
+- **Real controllers**: remappable, with a stick deadzone, a live input preview, battery level, and optional
+  automatic hiding of the on-screen controls.
+- **Display**: render resolution presets, UI margins sized to your screen (Auto, or set your own), up to 120 Hz,
+  iPad layouts.
+- **Performance**: memory tiers from what iOS grants the app, four garbage collectors, three JIT compiler tiers,
+  ASTC textures with a disk cache, and an experimental Zink backend for mods that need OpenGL 4.5.
+- **A launcher that explains itself**: live status on the home screen, settings that can be searched, the reason for
+  each value, a setup guide, and a log you can share.
 
 ## Supported Devices
 

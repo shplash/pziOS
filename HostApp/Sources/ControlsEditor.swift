@@ -121,12 +121,20 @@ struct TouchPreset: Codable, Identifiable, Equatable {
 
 enum TouchPresetStore {
     private static func key(_ pad: Bool) -> String { pad ? "zom.padPresets" : "zom.touchPresets" }
+    private static func nameKey(_ pad: Bool) -> String { pad ? "zom.padPresetName" : "zom.touchPresetName" }
     static func load(pad: Bool) -> [TouchPreset] {
         guard let s = UserDefaults.standard.string(forKey: key(pad)), let d = s.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([TouchPreset].self, from: d)) ?? []
     }
     static func save(_ list: [TouchPreset], pad: Bool) {
         if let d = try? JSONEncoder().encode(list), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: key(pad)) }
+    }
+    /// The saved layout the player loaded (or last saved), which the home screen and the editor show. Empty once the layout
+    /// has been changed since, so a name is never shown for controls it no longer describes.
+    static func activeName(pad: Bool) -> String { UserDefaults.standard.string(forKey: nameKey(pad)) ?? "" }
+    static func setActiveName(_ name: String, pad: Bool) {
+        if name.isEmpty { UserDefaults.standard.removeObject(forKey: nameKey(pad)) }
+        else { UserDefaults.standard.set(name, forKey: nameKey(pad)) }
     }
 }
 
@@ -294,6 +302,7 @@ struct TouchLayoutEditor: View {
     @State private var presets: [TouchPreset] = []
     @State private var naming = false
     @State private var newName = ""
+    @State private var currentPreset = ""        // the saved layout this came from; cleared once a control is changed
 
     private var selectedIndex: Int? { layout.items.firstIndex { $0.id == selected } }
 
@@ -337,9 +346,19 @@ struct TouchLayoutEditor: View {
             let work = DispatchWorkItem { TouchLayoutStore.save(l, pad: pad) }
             saveItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+            // Changing a control leaves the saved layout behind, so the name only stays while it still describes the layout.
+            if !currentPreset.isEmpty,
+               let saved = presets.first(where: { $0.name.caseInsensitiveCompare(currentPreset) == .orderedSame }),
+               saved.layout != l {
+                currentPreset = ""
+                TouchPresetStore.setActiveName("", pad: pad)
+            }
         }
         .onDisappear { saveItem?.cancel(); TouchLayoutStore.save(layout, pad: pad) }
-        .onAppear { presets = TouchPresetStore.load(pad: pad) }
+        .onAppear {
+            presets = TouchPresetStore.load(pad: pad)
+            currentPreset = TouchPresetStore.activeName(pad: pad)
+        }
         .alert("Save layout", isPresented: $naming) {
             TextField("Name", text: $newName)
             Button("Save") { saveCurrent(as: newName) }
@@ -353,6 +372,16 @@ struct TouchLayoutEditor: View {
         if let i = presets.firstIndex(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) { presets[i].layout = layout }
         else { presets.append(TouchPreset(name: n, layout: layout)) }
         TouchPresetStore.save(presets, pad: pad)
+        currentPreset = n
+        TouchPresetStore.setActiveName(n, pad: pad)
+    }
+
+    /// Loads a saved layout, and remembers that it is the one in use.
+    private func load(_ p: TouchPreset) {
+        layout = p.layout
+        selected = nil
+        currentPreset = p.name
+        TouchPresetStore.setActiveName(p.name, pad: pad)
     }
 
     // MARK: panel
@@ -420,6 +449,10 @@ struct TouchLayoutEditor: View {
             VStack(alignment: .leading, spacing: M.section) {
                 HStack {
                     Text(pad ? "Virtual Gamepad" : "Touch Controls").font(.system(size: 15, weight: .bold))
+                    if !currentPreset.isEmpty {
+                        Text(currentPreset).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
                     Spacer()
                     Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.4))
                 }
@@ -432,7 +465,12 @@ struct TouchLayoutEditor: View {
                 // Two even columns instead of four squeezed pills.
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: M.gap), GridItem(.flexible(), spacing: M.gap)], spacing: M.gap) {
                     addMenu
-                    Button { Haptics.tap(); layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout, pad: pad); selected = nil } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
+                    Button {
+                        Haptics.tap()
+                        layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout
+                        TouchLayoutStore.save(layout, pad: pad); selected = nil
+                        currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad)
+                    } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
                     savedMenu
                     Button { Haptics.tap(); dismiss() } label: { actionPill("Done", system: "checkmark", filled: true) }.buttonStyle(PressStyle())
                 }
@@ -509,9 +547,20 @@ struct TouchLayoutEditor: View {
             if !presets.isEmpty { Divider() }
             ForEach(presets) { p in
                 Menu(p.name) {
-                    Button { layout = p.layout; selected = nil } label: { Label("Load", systemImage: "arrow.down.doc") }
-                    Button { if let n = presets.firstIndex(where: { $0.id == p.id }) { presets[n].layout = layout; TouchPresetStore.save(presets, pad: pad) } } label: { Label("Replace with current", systemImage: "square.and.arrow.down") }
-                    Button(role: .destructive) { presets.removeAll { $0.id == p.id }; TouchPresetStore.save(presets, pad: pad) } label: { Label("Delete", systemImage: "trash") }
+                    Button { load(p) } label: { Label("Load", systemImage: "arrow.down.doc") }
+                    Button {
+                        if let n = presets.firstIndex(where: { $0.id == p.id }) {
+                            presets[n].layout = layout; TouchPresetStore.save(presets, pad: pad)
+                            currentPreset = p.name; TouchPresetStore.setActiveName(p.name, pad: pad)
+                        }
+                    } label: { Label("Replace with current", systemImage: "square.and.arrow.down") }
+                    Button(role: .destructive) {
+                        presets.removeAll { $0.id == p.id }
+                        TouchPresetStore.save(presets, pad: pad)
+                        if currentPreset.caseInsensitiveCompare(p.name) == .orderedSame {
+                            currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad)
+                        }
+                    } label: { Label("Delete", systemImage: "trash") }
                 }
             }
         } label: { actionPill("Saved", system: "square.stack") }
@@ -591,6 +640,17 @@ struct TouchLayoutEditor: View {
                 Slider(value: Binding(get: { layout.items[i].size }, set: { layout.items[i].size = $0 }),
                        in: item.kind == .scroll ? 40.0...90.0 : (item.isStick ? 90.0 : 36.0)...(item.isStick ? 200.0 : 110.0))
                     .tint(.white)
+            }
+            // A control that came with the layout can be put back exactly as it shipped, instead of being deleted and re-added by hand.
+            if let original = (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout).items.first(where: { $0.id == item.id }),
+               original != item {
+                Button {
+                    Haptics.tap(); layout.items[i] = original
+                } label: {
+                    Label("Reset this control", systemImage: "arrow.counterclockwise")
+                        .font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
+                        .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
+                }.buttonStyle(PressStyle())
             }
             if !item.locked {
                 Button(role: .destructive) { layout.items.remove(at: i); selected = nil } label: {

@@ -325,6 +325,9 @@ struct LauncherView: View {
     @State private var words = ThinkingLine.words.shuffled()
     @AppStorage("zom.jitMethod") private var jitMethod = 0
     @AppStorage("zom.heapLimit") private var heap = defaultHeapMode()
+    @AppStorage("zom.virtualPad") private var virtualPad = false
+    @AppStorage("zom.touchPresetName") private var touchPreset = ""
+    @AppStorage("zom.padPresetName") private var padPreset = ""
     @State private var build = GameBuild.loaded()
 
     private var installed: Bool { GameFiles.installed }
@@ -350,6 +353,11 @@ struct LauncherView: View {
     private var heapValue: String {
         let i = min(max(heap, 0), 3)
         return ["Low", "Medium", "High", "Very High"][i] + " · " + ["1.5 GB", "2 GB", "2.5 GB", "4 GB"][i]
+    }
+    /// Which on-screen layout the game will use, and the saved layout it was loaded or saved as (empty after an edit).
+    private var layoutValue: String {
+        let name = virtualPad ? padPreset : touchPreset
+        return (virtualPad ? "Gamepad" : "Touch") + (name.isEmpty ? "" : " · " + name)
     }
     private var versionText: String {
         let i = Bundle.main.infoDictionary ?? [:]
@@ -481,6 +489,8 @@ struct LauncherView: View {
                 StatusRow(icon: "gamecontroller.fill", title: "Controller", value: padValue, tint: pads.name == nil ? Theme.faint : Theme.success, m: m)
                 Divider().overlay(Color.white.opacity(0.07))
                 StatusRow(icon: "memorychip", title: "Memory", value: heapValue, tint: Theme.dim, m: m)
+                Divider().overlay(Color.white.opacity(0.07))
+                StatusRow(icon: "rectangle.3.group", title: "Layout", value: layoutValue, tint: Theme.dim, m: m)
             }
             .padding(.horizontal, m.v(12))
             .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(14)))
@@ -738,6 +748,7 @@ struct SettingsView: View {
     @AppStorage("zom.zinkLog") private var zinkLog = false              // with the Zink backend: write performance and device details to jvm.log
     @AppStorage("zom.zombieBuddy") private var zombieBuddy = false       // developer: start the game with -javaagent:ZombieBuddy.jar
     @AppStorage("zom.memLog") private var memLog = false                 // developer: write the memory footprint to jvm.log every 5 s
+    @AppStorage("zom.fpsCounter") private var fpsCounter = false         // developer: draw the frame rate in the corner of the game screen
     @AppStorage("zom.simAspect") private var simAspect = 0              // developer: 0 off, 1 4:3, 2 3:2, 3 16:10, 4 16:9
     @AppStorage("zom.renderRes") private var renderRes = UIDevice.current.userInterfaceIdiom == .pad ? 2 : 1              // 0 540p, 1 720p, 2 900p, 3 1080p
     @AppStorage("zom.jitMethod") private var jitMethod = 0              // 0 manual (run the script in StikDebug), 1 built-in StikJIT
@@ -748,6 +759,7 @@ struct SettingsView: View {
     @State private var importingPairing = false
     @State private var editor: Editor?
     @State private var confirmDev = false
+    @State private var query = ""                                        // settings search, across every page
 
     private static let sections = ["Game", "Input", "Setup", "Developer"]
     private var tabs: [Tab] { Tab.allCases.filter { devTools || !$0.developerOnly } }
@@ -841,8 +853,11 @@ struct SettingsView: View {
                 set: { controllerConfig.deadZone = $0; controllerConfig.save() })
     }
 
-    private var rows: [Row] {
-        switch tab {
+    private var rows: [Row] { rows(for: tab) }
+
+    /// The rows of any page, whether or not it is the one on screen; the search field uses them all.
+    private func rows(for t: Tab) -> [Row] {
+        switch t {
         case .graphics:
             return [
                 Row(id: "shrink", title: "Texture Compression", kind: .choice(["Off", "Balanced", "Strong"], $shrink), group: "Textures", detail: shrinkDetail),
@@ -934,6 +949,8 @@ struct SettingsView: View {
                     Row(id: "zinkproberes", title: zinkResult.isEmpty ? "Zink Probe result appears here." : zinkResult, kind: .info, group: "Diagnostics"),
                     Row(id: "memlog", title: "Log Memory Use", kind: .toggle($memLog),
                         detail: "Writes the app's memory footprint to jvm.log every 5 seconds, split into Java heap, graphics and native memory."),
+                    Row(id: "fps", title: "Show FPS", kind: .toggle($fpsCounter),
+                        detail: "Draws the frame rate and frame time in the corner of the game screen, counted at the buffer swap. Handy for seeing what a setting changed; leave it off for normal play. Applies on the next start."),
                     Row(id: "zombiebuddy", title: "ZombieBuddy", kind: .toggle($zombieBuddy), group: "Mods",
                         detail: "Adds -javaagent:ZombieBuddy.jar when the game starts. Put ZombieBuddy.jar in the game folder (Files, pziOS, game); if it isn't there the setting is skipped. Applies on the next start."),
                     Row(id: "resetargs", title: "Reset launch arguments to the default", kind: .action(destructive: true) {
@@ -943,7 +960,26 @@ struct SettingsView: View {
             return []
         }
     }
-    private var focusable: [Row] { rows.filter { $0.focusable && !$0.locked } }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    /// Rows of every page whose title, description or group matches the search, tagged with the page they came from.
+    private var searchResults: [Row] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return [] }
+        var out: [Row] = []
+        for t in tabs {
+            for r in rows(for: t) {
+                let text = ([r.title, r.detail ?? "", r.group ?? "", t.title, t.subtitle]).joined(separator: " ").lowercased()
+                guard text.contains(q) else { continue }
+                out.append(Row(id: "s.\(t.title).\(r.id)", title: r.title, kind: r.kind,
+                               group: t.title + (r.group.map { " · \($0)" } ?? ""), detail: r.detail, locked: r.locked))
+            }
+        }
+        return out
+    }
+
+    private var displayedRows: [Row] { searching ? searchResults : rows }
+    private var focusable: [Row] { displayedRows.filter { $0.focusable && !$0.locked } }
 
     var body: some View {
         GeometryReader { geo in
@@ -991,7 +1027,8 @@ struct SettingsView: View {
             controllerConfig = ControllerSettings.load()      // the Controller screen may have changed the mapping or deadzone
             pads.refresh()
         }
-        .onChange(of: tab) { _, _ in focus = 0 }
+        .onChange(of: tab) { _, _ in focus = 0; query = "" }
+        .onChange(of: query) { _, _ in focus = 0 }
         .onChange(of: devTools) { _, on in if !on && tab.developerOnly { tab = .performance } }
         .onChange(of: pad.tick) { _, _ in handle(pad.last) }
     }
@@ -1001,6 +1038,7 @@ struct SettingsView: View {
     private func sidebar(_ m: Metrics) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Settings").font(.system(size: m.v(19), weight: .bold)).padding(.bottom, m.v(6)).padding(.leading, m.v(8))
+            searchField(m)
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: m.v(1)) {
                     ForEach(Self.sections, id: \.self) { section in
@@ -1022,6 +1060,24 @@ struct SettingsView: View {
         .padding(.leading, m.v(16)).padding(.trailing, m.v(10)).padding(.top, m.v(24)).padding(.bottom, m.v(12))
     }
 
+    /// Search across every page, so a setting is found without remembering which tab it is on.
+    private func searchField(_ m: Metrics) -> some View {
+        HStack(spacing: m.v(5)) {
+            Image(systemName: "magnifyingglass").font(.system(size: m.v(10), weight: .semibold)).foregroundStyle(Theme.faint)
+            TextField("Search settings", text: $query)
+                .textFieldStyle(.plain).autocorrectionDisabled().textInputAutocapitalization(.never)
+                .font(.system(size: m.v(11.5))).foregroundStyle(.white)
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: m.v(11))).foregroundStyle(Theme.faint)
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, m.v(8)).frame(height: m.v(28))
+        .background(Color.white.opacity(0.08), in: Capsule())
+        .padding(.horizontal, m.v(8)).padding(.bottom, m.v(4))
+    }
+
     private func tabButton(_ t: Tab, _ m: Metrics) -> some View {
         Button { Haptics.tap(); withAnimation(.easeOut(duration: 0.16)) { tab = t } } label: {
             HStack(spacing: m.v(9)) {
@@ -1038,7 +1094,7 @@ struct SettingsView: View {
     // MARK: content
 
     @ViewBuilder private func content(_ m: Metrics) -> some View {
-        if tab == .log {
+        if tab == .log && !searching {
             VStack(alignment: .leading, spacing: m.v(8)) {
                 header(m)
                 HStack(spacing: m.v(10)) {
@@ -1061,8 +1117,14 @@ struct SettingsView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: m.v(6)) {
                     header(m)
-                    ForEach(rows) { row in
+                    ForEach(displayedRows) { row in
                         RowView(row: row, m: m, focused: pad.active && row.focusable && focusable.indices.contains(focus) && focusable[focus].id == row.id)
+                    }
+                    if searching && displayedRows.isEmpty {
+                        Text("Nothing on the settings pages matches that. Try a shorter word, such as “texture” or “memory”.")
+                            .font(.system(size: m.v(11.5))).foregroundStyle(Theme.dim)
+                            .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, m.v(6))
                     }
                 }
                 .frame(maxWidth: m.v(660))
@@ -1070,13 +1132,17 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity)
             }
             .animation(.easeInOut(duration: 0.16), value: tab)
+            .animation(.easeInOut(duration: 0.16), value: searching)
         }
     }
 
     private func header(_ m: Metrics) -> some View {
         VStack(alignment: .leading, spacing: m.v(2)) {
-            Text(tab.title).font(.system(size: m.v(22), weight: .bold))
-            Text(tab.subtitle).font(.system(size: m.v(11.5))).foregroundStyle(Theme.dim)
+            Text(searching ? "Search" : tab.title).font(.system(size: m.v(22), weight: .bold))
+            Text(searching ? (displayedRows.isEmpty ? "No setting matches “\(query)”."
+                                                     : "\(displayedRows.count) setting\(displayedRows.count == 1 ? "" : "s") found, from every page.")
+                           : tab.subtitle)
+                .font(.system(size: m.v(11.5))).foregroundStyle(Theme.dim)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.bottom, m.v(6))

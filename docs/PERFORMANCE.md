@@ -35,6 +35,7 @@ Also fixed:
 - **Texture Compression** (Graphics) and **ASTC Compression** (Performance): lower texture memory, less memory bandwidth.
 - **Memory Limit / Collector** (Performance): too small a heap means constant collection; `pzGC` keeps pauses near one frame.
 - **Frame Autorelease Pool** (Tools, experimental): frees the graphics layer's per-frame objects at the buffer swap. In testing it removed a steady memory climb (~170 MB less after 2–3 minutes); it also costs a little per frame, so it is off by default.
+- **Show FPS** (Tools): draws the frame rate and frame time in the corner of the game screen, counted at the buffer swap so it costs nothing. The quickest way to see what a setting actually changed.
 
 ## If frame time is bad in a specific spot
 
