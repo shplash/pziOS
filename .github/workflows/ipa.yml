@@ -2,12 +2,12 @@ name: IPA
 
 # Builds an unsigned (ad-hoc signed) IPA from this repository, the way scripts/make-ipa.sh does on a Mac.
 #
-# The device build needs compiled parts that are not in the repository (docs/BUILDING.md): the bundled JRE, MetalANGLE,
-# StikJIT and our native libraries, plus the game's own converted libraries. Two ways to supply them:
+# The device build needs compiled parts that are not in the repository (docs/BUILDING.md):
 #
-#   1. PZIOS_BINARIES_URL: a zip (or .tar.gz) at a direct URL whose top level holds runtime/ and Frameworks/.
-#   2. Nothing set: the workflow takes those parts out of the upstream release IPA and rebuilds the app with this fork's
-#      sources. Point PZIOS_SOURCE_IPA_URL at another IPA to use a different one.
+#   * runtime/ (the JRE and our native libraries, plus the game's converted libraries) and Frameworks/MetalANGLE.framework:
+#     taken from a pziOS release IPA by default. Set PZIOS_SOURCE_IPA_URL to use a different IPA, or PZIOS_BINARIES_URL
+#     to a zip whose top level holds runtime/ and Frameworks/ (your own build of them).
+#   * StikJIT.xcframework: downloaded from the StikJIT project's releases. Set PZIOS_STIKJIT_URL to use another build.
 #
 # The result contains that release's JRE and game libraries, so keep the artifact to yourself.
 # Every run leaves pziOS-ipa as an artifact; a tag push (v*) also attaches it to that release.
@@ -34,6 +34,7 @@ jobs:
         env:
           ZIP_URL: ${{ vars.PZIOS_BINARIES_URL }}
           SOURCE_IPA_URL: ${{ vars.PZIOS_SOURCE_IPA_URL }}
+          STIKJIT_URL: ${{ vars.PZIOS_STIKJIT_URL }}
         run: |
           set -euo pipefail
           rm -rf HostApp/runtime HostApp/Frameworks
@@ -66,12 +67,35 @@ jobs:
             METAL=$(find "$APP" -maxdepth 3 -name 'MetalANGLE.framework' -type d -print -quit)
             [ -n "$METAL" ] || { echo "::error::The source IPA has no MetalANGLE.framework"; exit 1; }
             cp -R "$METAL" HostApp/Frameworks/
+          fi
 
-            # The helper links StikJIT.framework; project.yml expects it inside an xcframework folder for ios-arm64.
-            STIK=$(find "$APP" -name 'StikJIT.framework' -type d -print -quit)
-            [ -n "$STIK" ] || { echo "::error::The source IPA has no StikJIT.framework"; exit 1; }
-            mkdir -p HostApp/Frameworks/StikJIT.xcframework/ios-arm64
-            cp -R "$STIK" HostApp/Frameworks/StikJIT.xcframework/ios-arm64/
+          # StikJIT has to be a real xcframework: the helper imports its Swift module to compile.
+          DEFAULT_STIKJIT="https://github.com/StikDebug/StikJIT/releases/download/1.9.0/StikJIT.xcframework.zip"
+          SJ_URL="${STIKJIT_URL:-$DEFAULT_STIKJIT}"
+          echo "Using StikJIT.xcframework from $SJ_URL"
+          mkdir -p "$RUNNER_TEMP/stikjit"
+          if curl -fL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/stikjit.zip" "$SJ_URL"; then
+            unzip -q -o "$RUNNER_TEMP/stikjit.zip" -d "$RUNNER_TEMP/stikjit"
+            XC=$(find "$RUNNER_TEMP/stikjit" -maxdepth 2 -name 'StikJIT.xcframework' -type d -print -quit)
+            if [ -n "$XC" ]; then
+              mkdir -p HostApp/Frameworks
+              rm -rf HostApp/Frameworks/StikJIT.xcframework
+              cp -R "$XC" HostApp/Frameworks/
+            else
+              echo "::warning::That StikJIT.xcframework.zip has no StikJIT.xcframework inside"
+            fi
+          else
+            echo "::warning::Could not download StikJIT.xcframework; falling back to the copy inside the source IPA"
+          fi
+          if [ ! -d HostApp/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework ] && [ -d "$RUNNER_TEMP/source/Payload" ]; then
+            APP="${APP:-$(find "$RUNNER_TEMP/source/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)}"
+            if [ -n "$APP" ]; then
+              STIK=$(find "$APP" -name 'StikJIT.framework' -type d -print -quit)
+              if [ -n "$STIK" ]; then
+                mkdir -p HostApp/Frameworks/StikJIT.xcframework/ios-arm64
+                cp -R "$STIK" HostApp/Frameworks/StikJIT.xcframework/ios-arm64/
+              fi
+            fi
           fi
 
           du -sh HostApp/runtime HostApp/Frameworks 2>/dev/null || true
@@ -88,7 +112,7 @@ jobs:
             need "HostApp/runtime/natives/$l.dylib"
           done
           if [ "$missing" = 1 ]; then
-            echo "::error::Those files are not in the repository (docs/BUILDING.md). Set the repository variable PZIOS_BINARIES_URL to a zip whose top level holds runtime/ and Frameworks/, or PZIOS_SOURCE_IPA_URL to a pziOS IPA that contains them."
+            echo "::error::Those files are not in the repository (docs/BUILDING.md). Set PZIOS_BINARIES_URL to a zip whose top level holds runtime/ and Frameworks/, or PZIOS_SOURCE_IPA_URL to a pziOS IPA that contains them."
             exit 1
           fi
 

@@ -11,8 +11,16 @@ cd "$ROOT/HostApp"
 [ -d runtime/jre ] && [ -d runtime/natives ] && [ -d Frameworks/MetalANGLE.framework ] || { echo "missing HostApp/runtime or HostApp/Frameworks (see docs/BUILDING.md)"; exit 1; }
 for l in libglfw libGLshim libgl4es_114 libEGLproxy libfmodhal libfmodhal_ca; do [ -f runtime/natives/$l.dylib ] || { echo "runtime/natives/$l.dylib missing"; exit 1; }; done
 xcodegen generate >/dev/null
-xcodebuild -project pziOS.xcodeproj -scheme pziOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" PZ_BUNDLE_ID="$BUNDLE_ID" PZ_TEAM_ID="$TEAM_ID" PZ_DISPLAY_NAME="$DISPLAY_NAME" build | tail -3
+LOG="$ROOT/build/xcodebuild.log"; mkdir -p "$ROOT/build"
+if ! xcodebuild -project pziOS.xcodeproj -scheme pziOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" PZ_BUNDLE_ID="$BUNDLE_ID" PZ_TEAM_ID="$TEAM_ID" PZ_DISPLAY_NAME="$DISPLAY_NAME" build > "$LOG" 2>&1; then
+  echo "--- build errors ---"
+  grep -E "error:|fatal error:" "$LOG" | grep -vE "^[^ ]*: note:" | head -60 || true
+  echo "--- end of the build log ---"
+  tail -25 "$LOG"
+  exit 1
+fi
+tail -3 "$LOG"
 APP="$DD/Build/Products/Release-iphoneos/pziOS.app"
 [ -n "$PROFILE_APP" ] && cp "$PROFILE_APP" "$APP/embedded.mobileprovision"
 [ -n "$PROFILE_JIT" ] && cp "$PROFILE_JIT" "$APP/PlugIns/ZomJITHelper.appex/embedded.mobileprovision"
