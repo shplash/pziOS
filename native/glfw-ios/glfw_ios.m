@@ -454,6 +454,180 @@ static void vpad_set_stick(int stick, float x, float y) {
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
 @end
 
+// Radial menu: hold it (or start sliding) and its options fan out around it; slide toward one and let go to send it. Letting go
+// near where the finger started sends nothing, and a quick tap sends the tap option if one is set. An option can be a key, a mouse
+// button, or one of the overlay's own controls (hide/show, PAD/TCH, keyboard, a fire mode toggle), so HIDE and PAD can live in a
+// radial. Shapes: ring, arc, column, row; "spread" scales the spacing. The launcher's editor preview uses the same maths
+// (RadialGeometry in ControlsEditor.swift), so keep the two in step.
+@interface ZORadialSlot : NSObject
+@property (nonatomic, copy) NSString *kind, *label, *target;     // kind: none, key, mouse, hide, mode, keyboard, firemode
+@property (nonatomic) int code;
+@end
+@implementation ZORadialSlot
+@end
+
+// Where a radial menu's options go. Writes each option's centre into pts and returns the size of one option; the whole group is then
+// moved onto the screen. A thumb is matched to the option whose centre is nearest, which stays correct after that move.
+static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spread, CGFloat W, CGFloat H, CGPoint *pts) {
+    double s = spread <= 0 ? 1.0 : MAX(0.6, MIN(1.6, spread));
+    CGSize item = shape == 2 ? CGSizeMake(104, 38) : CGSizeMake(58, 58);
+    if (n <= 0) return item;
+    int side = c.x > W / 2 ? -1 : 1;                                       // column and row open towards the middle of the screen
+    if (shape == 1) {
+        CGFloat dl = c.x, dr = W - c.x, dt = c.y, db = H - c.y, m = MIN(MIN(dl, dr), MIN(dt, db));
+        double out = m == dr ? 180 : m == dl ? 0 : m == dt ? 90 : -90;      // facing away from the nearest edge
+        double sign = (out == 180 || out == 90) ? -1 : 1;                   // first option at the top (or the left)
+        CGFloat R = MAX(80, 64 / (2 * sin(M_PI / (2.0 * n)))) * s;
+        for (int i = 0; i < n; i++) {
+            double a = out - 90 * sign + sign * 180.0 * (i + 0.5) / n;
+            pts[i] = CGPointMake(c.x + R * cos(a * M_PI / 180), c.y + R * sin(a * M_PI / 180));
+        }
+    } else if (shape == 2) {
+        CGFloat gap = 6 * s, x = c.x + side * (btn / 2 + 12 + item.width / 2), total = n * item.height + (n - 1) * gap;
+        for (int i = 0; i < n; i++) pts[i] = CGPointMake(x, c.y - total / 2 + item.height / 2 + i * (item.height + gap));
+    } else if (shape == 3) {
+        CGFloat gap = 6 * s;
+        for (int i = 0; i < n; i++) pts[i] = CGPointMake(c.x + side * (btn / 2 + 8 + item.width / 2 + i * (item.width + gap)), c.y);
+    } else {
+        CGFloat R = (n <= 4 ? 76 : n <= 6 ? 88 : 100) * s;
+        for (int i = 0; i < n; i++) {
+            double a = -90.0 + 360.0 * i / n;
+            pts[i] = CGPointMake(c.x + R * cos(a * M_PI / 180), c.y + R * sin(a * M_PI / 180));
+        }
+    }
+    CGFloat m = 8, x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for (int i = 0; i < n; i++) {
+        x0 = MIN(x0, pts[i].x - item.width / 2); x1 = MAX(x1, pts[i].x + item.width / 2);
+        y0 = MIN(y0, pts[i].y - item.height / 2); y1 = MAX(y1, pts[i].y + item.height / 2);
+    }
+    CGFloat dx = x0 < m ? m - x0 : (x1 > W - m ? (W - m) - x1 : 0), dy = y0 < m ? m - y0 : (y1 > H - m ? (H - m) - y1 : 0);
+    for (int i = 0; i < n; i++) { pts[i].x += dx; pts[i].y += dy; }
+    return item;
+}
+
+@interface ZORadial : UIView
+@property (nonatomic) CGPoint norm;
+@property (nonatomic) int shape;                        // 0 ring, 1 arc, 2 column, 3 row
+@property (nonatomic) double spread;                    // spacing multiplier, 0.6-1.6
+@property (nonatomic, strong) NSArray<ZORadialSlot *> *slots;
+@property (nonatomic) int tapSlot;                      // -1 = a tap does nothing
+@property (nonatomic, weak) UITouch *touch;
+@property (nonatomic) CGPoint startPt;
+@property (nonatomic) BOOL open;
+@property (nonatomic) int hot;                          // highlighted option, -1 = none
+@property (nonatomic) NSUInteger token;
+@property (nonatomic, strong) NSMutableArray<UIView *> *ringViews;
+@property (nonatomic, strong) UILabel *face;
+- (BOOL)holds:(NSString *)kind;
+- (void)setFaceText:(NSString *)t;
+- (void)closeRing;
+@end
+@implementation ZORadial
+- (instancetype)initWithFrame:(CGRect)f {
+    if ((self = [super initWithFrame:f])) {
+        self.multipleTouchEnabled = YES; _hot = -1; _tapSlot = -1; _spread = 1;
+        self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
+        self.layer.cornerRadius = f.size.width / 2; self.layer.borderWidth = 2; self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
+        self.face = [[UILabel alloc] initWithFrame:self.bounds];
+        self.face.textAlignment = NSTextAlignmentCenter; self.face.textColor = UIColor.whiteColor; self.face.userInteractionEnabled = NO;
+        self.face.adjustsFontSizeToFitWidth = YES; self.face.minimumScaleFactor = 0.6;
+        [self addSubview:self.face];
+    }
+    return self;
+}
+- (void)setFaceText:(NSString *)t {
+    CGFloat w = self.bounds.size.width;
+    self.face.text = t.length ? t : @"\u2261";                                            // three bars when it has no label
+    self.face.font = [UIFont boldSystemFontOfSize:t.length ? (w > 50 ? 15 : 12) : w * 0.4];
+}
+- (BOOL)holds:(NSString *)kind { for (ZORadialSlot *s in self.slots) if ([s.kind isEqualToString:kind]) return YES; return NO; }
+- (GLFWiOSView *)gv { return (GLFWiOSView *)self.superview; }
+- (void)openRing {
+    if (self.open || self.slots.count == 0) return;
+    self.open = YES;
+    GLFWiOSView *gv = self.gv; int n = (int)MIN(self.slots.count, 8);
+    CGPoint pts[8];
+    CGSize sz = radial_layout(self.shape, n, self.center, self.bounds.size.width, self.spread, gv.bounds.size.width, gv.bounds.size.height, pts);
+    self.ringViews = [NSMutableArray array];
+    for (int i = 0; i < n; i++) {
+        ZORadialSlot *s = self.slots[i];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, sz.width, sz.height)];
+        l.center = pts[i];
+        BOOL empty = [s.kind isEqualToString:@"none"];
+        l.text = s.label.length ? s.label : (empty ? @"\u2014" : @"?");
+        l.textAlignment = NSTextAlignmentCenter; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:13];
+        l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.55; l.userInteractionEnabled = NO;
+        l.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.78]; l.layer.cornerRadius = MIN(sz.width, sz.height) / 2; l.layer.masksToBounds = YES;
+        l.layer.borderWidth = 2; l.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
+        if (empty) l.alpha = 0.45;
+        [gv addSubview:l]; [self.ringViews addObject:l];
+    }
+    [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+}
+- (void)setHot:(int)h {
+    if (_hot == h) return; _hot = h;
+    for (NSUInteger i = 0; i < self.ringViews.count; i++) {
+        UIView *v = self.ringViews[i]; BOOL on = (int)i == h;
+        v.backgroundColor = on ? [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.9] : [UIColor colorWithWhite:0.1 alpha:0.78];
+        v.transform = on ? CGAffineTransformMakeScale(1.12, 1.12) : CGAffineTransformIdentity;
+    }
+    if (h >= 0) [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+}
+- (void)closeRing {
+    for (UIView *v in self.ringViews) [v removeFromSuperview];
+    self.ringViews = nil; self.open = NO; _hot = -1;
+}
+- (void)fire:(int)i {
+    if (i < 0 || i >= (int)self.slots.count) return;
+    ZORadialSlot *s = self.slots[i]; GLFWiOSView *gv = self.gv; NSString *k = s.kind;
+    if ([k isEqualToString:@"key"] || [k isEqualToString:@"mouse"]) {                // a quick press and release
+        BOOL key = [k isEqualToString:@"key"]; int c = s.code;
+        if (key) push_key(c, GLFW_PRESS); else push_mouse(c, GLFW_PRESS);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            if (key) push_key(c, GLFW_RELEASE); else push_mouse(c, GLFW_RELEASE);
+        });
+        if (key && c == 256) [gv releaseLatches];
+    }
+    else if ([k isEqualToString:@"hide"]) [gv toggleControls];
+    else if ([k isEqualToString:@"mode"]) [gv toggleMode];
+    else if ([k isEqualToString:@"keyboard"]) [gv toggleKeyboard];
+    else if ([k isEqualToString:@"firemode"]) [gv cycleFireModeForTarget:s.target];
+    if (input_log_enabled()) glfwi_log("radial: sent %s (%d)", k.UTF8String, s.code);
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (self.touch) return;
+    self.touch = ts.anyObject; self.startPt = [self.touch locationInView:self.gv]; self.hot = -1;
+    self.backgroundColor = [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.6];
+    NSUInteger tok = ++self.token; __weak ZORadial *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{   // held: open the ring
+        ZORadial *s = ws; if (s && s.token == tok && s.touch) [s openRing];
+    });
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (!self.touch || ![ts containsObject:self.touch]) return;
+    CGPoint p = [self.touch locationInView:self.gv];
+    if (!self.open) { if (hypot(p.x - self.startPt.x, p.y - self.startPt.y) < 12) return; [self openRing]; }   // sliding opens it at once
+    if (self.ringViews.count == 0) return;
+    int best = -1; double bd = 26;                                                  // within 26 pt of an option's centre
+    for (NSUInteger i = 0; i < self.ringViews.count; i++) {
+        CGPoint q = self.ringViews[i].center; double d = hypot(p.x - q.x, p.y - q.y);
+        if (d < bd) { bd = d; best = (int)i; }
+    }
+    self.hot = best;
+}
+- (void)finish:(NSSet<UITouch *> *)ts cancelled:(BOOL)cancelled {
+    if (!self.touch || ![ts containsObject:self.touch]) return;
+    self.touch = nil; self.token++;
+    self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
+    BOOL wasOpen = self.open; int h = self.hot;
+    [self closeRing];
+    if (cancelled) return;
+    [self fire:wasOpen ? h : self.tapSlot];                                        // open: the chosen option (or nothing); tap: the tap option
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts cancelled:NO]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts cancelled:YES]; }
+@end
+
 @interface ZOJoystick : UIView
 @property (nonatomic) BOOL up, left, down, right;
 @property (nonatomic, strong) CAShapeLayer *thumb;
@@ -763,7 +937,12 @@ static void frame_rate_hint_start(void) {
     // a controller, or a physical keyboard together with a mouse; the controller only hides the controls when the player left it that way
     BOOL away = (self.padConnected && pad_overlay_hides()) || kbm_connected();
     if (self.controlsHidden || away) [self releaseLatches];   // a locked button must not stay held with nothing left to tap
-    for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
+    for (UIView *v in self.controls) {
+        BOOL isRadial = [v isKindOfClass:ZORadial.class];
+        // A radial that holds Hide/Show is the way back, so it stays on screen while the rest is hidden.
+        v.hidden = (self.controlsHidden && !(isRadial && [(ZORadial *)v holds:@"hide"])) || away;
+        if (isRadial && v.hidden) [(ZORadial *)v closeRing];
+    }
     self.hideButton.hidden = away; self.modeButton.hidden = away;
 }
 - (void)setPadConnected:(BOOL)on { if (_padConnected == on) return; _padConnected = on; [self updateControlVisibility]; glfwi_log("controller %s: on-screen controls %s", on ? "connected" : "disconnected", on ? "hidden" : "shown"); }
@@ -796,6 +975,7 @@ static void frame_rate_hint_start(void) {
     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
     CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;   // 5% floor: under 1% iOS stops delivering touches
     int tag = 30;
+    BOOL radialHide = NO, radialMode = NO;                // a radial holding these replaces the standalone HIDE / PAD buttons
     for (NSDictionary *it in items) {
         if (![it isKindOfClass:NSDictionary.class]) continue;
         NSString *kind = it[@"kind"]; if (![kind isKindOfClass:NSString.class]) continue;
@@ -807,6 +987,28 @@ static void frame_rate_hint_start(void) {
         if ([kind isEqualToString:@"aimstick"]) {
             ZOAimStick *a = [[ZOAimStick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; a.tag = tag++; a.norm = norm; a.alpha = alpha;
             [self addSubview:a]; [self.controls addObject:a]; continue;
+        }
+        if ([kind isEqualToString:@"radial"]) {
+            ZORadial *r = [[ZORadial alloc] initWithFrame:CGRectMake(0, 0, size, size)]; r.tag = tag++; r.norm = norm; r.alpha = alpha;
+            NSMutableArray<ZORadialSlot *> *sl = [NSMutableArray array];
+            NSArray *raw = [it[@"slots"] isKindOfClass:NSArray.class] ? it[@"slots"] : @[];
+            for (NSDictionary *d in raw) {
+                if (![d isKindOfClass:NSDictionary.class]) continue;
+                ZORadialSlot *s = [ZORadialSlot new];
+                s.kind = [d[@"kind"] isKindOfClass:NSString.class] ? d[@"kind"] : @"none";
+                s.code = [d[@"code"] respondsToSelector:@selector(intValue)] ? [d[@"code"] intValue] : 0;
+                s.label = [d[@"label"] isKindOfClass:NSString.class] ? d[@"label"] : @"";
+                s.target = [d[@"target"] isKindOfClass:NSString.class] ? d[@"target"] : nil;
+                [sl addObject:s]; if (sl.count == 8) break;
+            }
+            r.slots = sl;
+            r.tapSlot = [it[@"tapSlot"] respondsToSelector:@selector(intValue)] ? [it[@"tapSlot"] intValue] : -1;
+            r.shape = [it[@"radialShape"] respondsToSelector:@selector(intValue)] ? MAX(0, MIN(3, [it[@"radialShape"] intValue])) : 0;
+            r.spread = [it[@"radialSpread"] respondsToSelector:@selector(doubleValue)] ? MAX(0.6, MIN(1.6, [it[@"radialSpread"] doubleValue])) : 1.0;
+            [r setFaceText:label];
+            if ([r holds:@"hide"]) radialHide = YES;
+            if ([r holds:@"mode"]) radialMode = YES;
+            [self addSubview:r]; [self.controls addObject:r]; continue;
         }
         if ([kind isEqualToString:@"scroll"]) {           // drawn 0.6 x 2.2 times its size, so "size" scales it like the other controls
             ZOScrollStrip *sc = [[ZOScrollStrip alloc] initWithFrame:CGRectMake(0, 0, size * 0.6, size * 2.2)];
@@ -845,8 +1047,8 @@ static void frame_rate_hint_start(void) {
         else if (k == 4) { self.modeButton = b; b.tag = 20; }
         else [self.controls addObject:b];
     }
-    if (!self.hideButton) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
-    if (!self.modeButton) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
+    if (!self.hideButton && !radialHide) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
+    if (!self.modeButton && !radialMode) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
     [self updateFireToggles];
     glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
     return YES;
@@ -855,7 +1057,7 @@ static void frame_rate_hint_start(void) {
 // button must not count, or holding the stick with one thumb and a button with the other reads as a zoom gesture.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     for (UIView *v = touch.view; v && v != self; v = v.superview)
-        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOVPadStick.class] || [v isKindOfClass:ZOScrollStrip.class]) return NO;
+        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOVPadStick.class] || [v isKindOfClass:ZOScrollStrip.class] || [v isKindOfClass:ZORadial.class]) return NO;
     return YES;
 }
 - (void)installControls {
@@ -905,7 +1107,7 @@ static void frame_rate_hint_start(void) {
     CGFloat L = MAX(in.left, 20), R = MAX(in.right, 20), B = MAX(in.bottom, 14), T = MAX(in.top, 10);
     for (UIView *v in self.subviews) {
         CGPoint np = CGPointZero;
-        if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm; else if ([v isKindOfClass:ZOVPadStick.class]) np = ((ZOVPadStick *)v).norm; else if ([v isKindOfClass:ZOScrollStrip.class]) np = ((ZOScrollStrip *)v).norm;
+        if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm; else if ([v isKindOfClass:ZOVPadStick.class]) np = ((ZOVPadStick *)v).norm; else if ([v isKindOfClass:ZOScrollStrip.class]) np = ((ZOScrollStrip *)v).norm; else if ([v isKindOfClass:ZORadial.class]) np = ((ZORadial *)v).norm;
         if (np.x != 0 || np.y != 0) {      // saved layout
             CGFloat hw = v.bounds.size.width / 2, hh = v.bounds.size.height / 2;      // the scroll strip is tall, so keep the whole bar on screen
             v.center = CGPointMake(MIN(MAX(np.x * W, hw), W - hw), MIN(MAX(np.y * H, hh), H - hh));
