@@ -204,7 +204,6 @@ enum TouchLayoutStore {
             save(l, driving: driving)
         }
         UserDefaults.standard.set(engine == "pad", forKey: "zom.analogMovement")
-        UserDefaults.standard.set(engine == "pad", forKey: "zom.stickEngine")
     }
     static func reset() { UserDefaults.standard.removeObject(forKey: key) }
 
@@ -730,7 +729,6 @@ struct TouchLayoutEditor: View {
         let other = TouchLayoutStore.load(driving: !slotDriving).items
         let on = (layout.items + other).contains { $0.kind == .stick && $0.stickEngine == "pad" }
         UserDefaults.standard.set(on, forKey: "zom.analogMovement")
-        UserDefaults.standard.set(on, forKey: "zom.stickEngine")   // shown by Settings > Controls > Movement Engine
     }
 
     /// Switches between editing the on-foot and the driving layout.
