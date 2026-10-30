@@ -331,3 +331,40 @@ end
 install()                                          -- classes may already exist when this file loads...
 Events.OnGameBoot.Add(install)                     -- ...and are certain to exist by now, before any menu is built
 Events.OnMainMenuEnter.Add(install)
+
+
+-- -------------------------------------------------------------------------------------------------------------------------
+-- Vehicle state for the on-screen overlay: it switches between the on-foot and the driving touch layout. This is kept here
+-- as well as in pziOSDrive.lua, because at least one of the two always loads, and it runs whatever the margins are (Off
+-- included). The overlay reads pzios_vehicle.txt and also watches for these printed lines in jvm.log.
+do
+    local vehicleLast = nil
+    local vehicleTicks = 0
+    local function vehicleWrite(inCar)
+        local w = getFileWriter("pzios_vehicle.txt", true, false)
+        if not w then return end
+        w:write(inCar and "1" or "0")
+        w:close()
+    end
+    local function vehicleUpdate()
+        if not getPlayer then return end
+        local ok, p = pcall(getPlayer)
+        if not ok or p == nil then return end
+        local inCar = p.getVehicle ~= nil and p:getVehicle() ~= nil
+        inCar = inCar and true or false
+        if inCar == vehicleLast then return end
+        vehicleLast = inCar
+        pcall(vehicleWrite, inCar)
+        print(inCar and "[pziOS] in a vehicle: driving layout" or "[pziOS] on foot: normal layout")
+    end
+    Events.OnTick.Add(function()
+        vehicleTicks = vehicleTicks + 1
+        if vehicleTicks % 30 == 0 then pcall(vehicleUpdate) end
+    end)
+    Events.OnGameStart.Add(function()
+        vehicleLast = nil
+        pcall(vehicleWrite, false)
+        pcall(vehicleUpdate)
+    end)
+    print("[pziOS] vehicle state reporting on")
+end

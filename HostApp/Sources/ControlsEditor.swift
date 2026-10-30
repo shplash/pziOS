@@ -6,11 +6,12 @@ import UIKit
 // MARK: - Touch layout model
 
 struct TouchItem: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, radial, padstick, padbtn, padtrig, drive }     // pad*: virtual gamepad controls; drive: switches between the on-foot and driving layouts
+    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, radial, padstick, padbtn, padtrig, drive, combo }     // pad*: virtual gamepad controls; drive: on-foot/driving switch; combo: two keys at once
     var id: String
     var kind: Kind
     var label: String
     var code: Int            // GLFW key code, or mouse button (0 left, 1 right, 2 middle)
+    var code2: Int? = nil    // combo: the second key, pressed and released with code (e.g. Shift+W for cruise control)
     var x: Double            // centre, as a fraction of the screen
     var y: Double
     var size: Double         // points
@@ -61,7 +62,7 @@ struct RadialSlot: Codable, Identifiable, Equatable {
 /// (native/glfw-ios/glfw_ios.m), so the editor preview matches the game exactly. Keep the two in step.
 enum RadialGeometry {
     static func layout(shape: Int, n: Int, center c: CGPoint, button btn: CGFloat, spread: Double, W: CGFloat, H: CGFloat) -> (points: [CGPoint], size: CGSize) {
-        let s = max(0.6, min(1.6, spread <= 0 ? 1 : spread))
+        let s = max(0.6, min(1.8, spread <= 0 ? 1.15 : spread))
         let item = shape == 2 ? CGSize(width: 104, height: 38) : CGSize(width: 58, height: 58)
         guard n > 0 else { return ([], item) }
         let side: CGFloat = c.x > W / 2 ? -1 : 1
@@ -75,17 +76,17 @@ enum RadialGeometry {
             let dl = c.x, dr = W - c.x, dt = c.y, db = H - c.y, m = min(dl, dr, dt, db)
             let out: Double = m == dr ? 180 : m == dl ? 0 : m == dt ? 90 : -90
             let sign: Double = (out == 180 || out == 90) ? -1 : 1
-            let r = max(80, 64 / (2 * sin(Double.pi / (2 * Double(n))))) * s
+            let r = max(92, 74 / (2 * sin(Double.pi / (2 * Double(n))))) * s
             for i in 0..<n { pts.append(around(r, out - 90 * sign + sign * 180 * (Double(i) + 0.5) / Double(n))) }
         case 2:                                   // column: a vertical list beside the button, towards the middle
-            let gap = 6 * s
-            let x = c.x + side * (btn / 2 + 12 + item.width / 2), total = CGFloat(n) * item.height + CGFloat(n - 1) * gap
+            let gap = 9 * s
+            let x = c.x + side * (btn / 2 + 14 + item.width / 2), total = CGFloat(n) * item.height + CGFloat(n - 1) * gap
             for i in 0..<n { pts.append(CGPoint(x: x, y: c.y - total / 2 + item.height / 2 + CGFloat(i) * (item.height + gap))) }
         case 3:                                   // row: a horizontal list beside the button
-            let gap = 6 * s
-            for i in 0..<n { pts.append(CGPoint(x: c.x + side * (btn / 2 + 8 + item.width / 2 + CGFloat(i) * (item.width + gap)), y: c.y)) }
+            let gap = 9 * s
+            for i in 0..<n { pts.append(CGPoint(x: c.x + side * (btn / 2 + 10 + item.width / 2 + CGFloat(i) * (item.width + gap)), y: c.y)) }
         default:                                  // ring: clockwise from the top
-            let r: Double = (n <= 4 ? 76 : n <= 6 ? 88 : 100) * s
+            let r: Double = (n <= 4 ? 90 : n <= 6 ? 106 : 120) * s
             for i in 0..<n { pts.append(around(r, -90 + 360 * Double(i) / Double(n))) }
         }
         let m: CGFloat = 8                        // move the whole group onto the screen
@@ -105,7 +106,7 @@ private struct RadialPreview: View {
     var body: some View {
         let slots = Array((item.slots ?? []).prefix(8))
         let g = RadialGeometry.layout(shape: item.radialShape ?? 0, n: slots.count, center: CGPoint(x: item.x * W, y: item.y * H),
-                                      button: item.size, spread: item.radialSpread ?? 1, W: W, H: H)
+                                      button: item.size, spread: item.radialSpread ?? 1.15, W: W, H: H)
         let corner = min(g.size.width, g.size.height) / 2
         ZStack {
             ForEach(Array(slots.enumerated()), id: \.element.id) { n, sl in
@@ -356,25 +357,48 @@ enum TouchLayoutStore {
         return icons(l)
     }
 
-    /// The default driving layout: minimal on purpose, because driving needs the stick, the handbrake and a way out, not the
-    /// whole on-foot HUD. The overlay switches to it by itself when you get in a car (if that is on), and the FOOT button or
-    /// the DRIVE option in the radial switches back.
+    /// The default driving layout, laid out like a mobile driving game: steering arrows bottom-left, gas and brake under the
+    /// right thumb, a latched handbrake, cruise control up/down (the game's own Shift+W / Shift+S), exit, and two radials.
+    /// No stick at all, so Shift+W can never turn cruise control on by accident while driving.
     static var drivingDefaultLayout: TouchLayout {
         var l = lay([
-            ("stick", .stick, "", 0, 108, 344, 152),
-            ("brake", .key, "BRK", 32, 720, 344, 78),        // Space: handbrake
-            ("exit", .key, "EXIT", 69, 720, 244, 62),        // E: enter / exit
-            ("foot", .drive, "FOOT", 0, 866, 244, 54),       // back to the on-foot layout
+            ("left", .key, "LEFT", 65, 90, 372, 76),         // A: steer left
+            ("right", .key, "RIGHT", 68, 196, 372, 76),      // D: steer right
+            ("gas", .key, "GAS", 87, 866, 332, 96),          // W: accelerate
+            ("brake", .key, "BRAKE", 83, 766, 356, 78),      // S: brake / reverse
+            ("handbrake", .key, "PARK", 32, 766, 262, 64),   // Space: handbrake, latched
+            ("exit", .key, "EXIT", 69, 90, 274, 62),         // E: enter / exit the vehicle
+            ("foot", .drive, "FOOT", 0, 196, 274, 62),       // back to the on-foot layout
+            ("lights", .key, "LIT", 70, 90, 196, 50),        // F: headlights
+            ("horn", .key, "HORN", 81, 152, 196, 50),        // Q: horn
+            ("engine", .key, "ENG", 78, 214, 196, 50),       // N: engine
             ("hide", .hide, "HIDE", 0, 916, 32, 46),
         ])
-        l.items.append(radial("vehicle", "VEH", 392, 112, [
+        l.items.append(radial("vehicle", "VEH", 392, 120, [
             (.key, 86, "VEH"), (.key, 70, "LIGHTS"), (.key, 78, "ENGINE"), (.key, 79, "HEATER"),
             (.key, 85, "INFO"), (.key, 90, "SEAT"), (.key, 81, "HORN"),
         ]))
-        l = with(l, "brake") { $0.holdLock = true }          // parking brake: tap once, it stays on
-        // Shift + W is cruise control in a car, so the stick must not push Run while driving.
-        l = with(l, "stick") { $0.stickPushKey = 0; $0.stickPush2Key = 0 }
+        l.items.append(radial("menu", "MENU", 492, 120, [
+            (.key, 73, "INV"), (.key, 77, "MAP"), (.key, 72, "HP"), (.key, 256, "ESC"),
+            (.keyboard, 0, "KB"), (.hide, 0, "HIDE"),
+        ]))
+        l = with(l, "left") { $0.icon = "arrow.left" }
+        l = with(l, "right") { $0.icon = "arrow.right" }
+        l = with(l, "gas") { $0.icon = "fuelpump.fill" }
+        l = with(l, "brake") { $0.icon = "octagon.fill" }
+        l = with(l, "handbrake") { $0.icon = "parkingsign"; $0.holdLock = true }
+        l = with(l, "exit") { $0.icon = "rectangle.portrait.and.arrow.right" }
         l = with(l, "foot") { $0.icon = "figure.walk" }
+        l = with(l, "lights") { $0.icon = "headlight.high.beam.fill" }
+        l = with(l, "horn") { $0.icon = "speaker.wave.3.fill" }
+        l = with(l, "engine") { $0.icon = "engine.combustion" }
+        l = with(l, "vehicle") { $0.icon = "car.fill" }
+        // Cruise control: the game's own Shift+W (faster) and Shift+S (slower) as two-key buttons.
+        var cruiseUp = TouchItem(id: "cruiseup", kind: .combo, label: "C+", code: 340, x: 866 / 956.0, y: 236 / 440.0, size: 54)
+        cruiseUp.code2 = 87; cruiseUp.icon = "speedometer"
+        var cruiseDown = TouchItem(id: "cruisedown", kind: .combo, label: "C-", code: 340, x: 866 / 956.0, y: 172 / 440.0, size: 50)
+        cruiseDown.code2 = 83; cruiseDown.icon = "speedometer"
+        l.items.append(contentsOf: [cruiseUp, cruiseDown])
         return icons(l)
     }
 
@@ -498,41 +522,51 @@ enum ControlIcon {
     }
     static let groups: [(String, [Entry])] = [
         ("Actions", [
-            Entry(symbol: "hand.point.up.left.fill", name: "Attack"),
+            Entry(symbol: "cursorarrow.click", name: "Attack / click"),
             Entry(symbol: "scope", name: "Aim"),
-            Entry(symbol: "bolt.fill", name: "Shove"),
+            Entry(symbol: "hand.raised.fill", name: "Shove / push"),
             Entry(symbol: "hand.tap.fill", name: "Interact"),
             Entry(symbol: "figure.run", name: "Run"),
-            Entry(symbol: "figure.walk", name: "Crouch"),
-            Entry(symbol: "arrow.counterclockwise", name: "Reload"),
-            Entry(symbol: "arrow.up.forward", name: "Rack"),
+            Entry(symbol: "figure.walk", name: "Walk / crouch"),
+            Entry(symbol: "chevron.down.circle.fill", name: "Crouch (down)"),
+            Entry(symbol: "arrow.triangle.2.circlepath", name: "Reload"),
+            Entry(symbol: "arrow.up.forward.circle", name: "Rack"),
+            Entry(symbol: "bolt.fill", name: "Quick / energy"),
+        ]),
+        ("Driving", [
+            Entry(symbol: "steeringwheel", name: "Steering wheel"),
+            Entry(symbol: "arrow.left", name: "Steer left"),
+            Entry(symbol: "arrow.right", name: "Steer right"),
+            Entry(symbol: "fuelpump.fill", name: "Gas"),
+            Entry(symbol: "octagon.fill", name: "Brake"),
+            Entry(symbol: "parkingsign", name: "Handbrake"),
+            Entry(symbol: "speedometer", name: "Cruise control"),
+            Entry(symbol: "headlight.high.beam.fill", name: "Headlights"),
+            Entry(symbol: "car.fill", name: "Vehicle menu"),
+            Entry(symbol: "chair.fill", name: "Seat"),
+            Entry(symbol: "speaker.wave.3.fill", name: "Horn"),
+            Entry(symbol: "engine.combustion", name: "Engine"),
+            Entry(symbol: "thermometer.medium", name: "Heater"),
+            Entry(symbol: "info.circle", name: "Vehicle info"),
         ]),
         ("Panels", [
             Entry(symbol: "bag.fill", name: "Inventory"),
             Entry(symbol: "heart.fill", name: "Health"),
+            Entry(symbol: "cross.case.fill", name: "First aid"),
             Entry(symbol: "map.fill", name: "Map"),
-            Entry(symbol: "book.fill", name: "Info"),
+            Entry(symbol: "book.fill", name: "Info / skills"),
             Entry(symbol: "shield.fill", name: "Protection"),
             Entry(symbol: "hammer.fill", name: "Crafting"),
-            Entry(symbol: "cross.case.fill", name: "First aid"),
             Entry(symbol: "lightbulb.fill", name: "Light"),
             Entry(symbol: "bubble.left.fill", name: "Chat"),
             Entry(symbol: "person.fill", name: "Character"),
         ]),
-        ("Vehicle", [
-            Entry(symbol: "car.fill", name: "Vehicle"),
-            Entry(symbol: "engine.combustion", name: "Engine"),
-            Entry(symbol: "thermometer.medium", name: "Heater"),
-            Entry(symbol: "sun.max.fill", name: "Headlights"),
-            Entry(symbol: "speaker.wave.2.fill", name: "Horn"),
-            Entry(symbol: "chair.fill", name: "Seat"),
-        ]),
         ("Menu", [
             Entry(symbol: "escape", name: "Escape"),
-            Entry(symbol: "rectangle.on.rectangle", name: "Tab"),
+            Entry(symbol: "arrow.right.to.line", name: "Tab"),
             Entry(symbol: "keyboard", name: "Keyboard"),
             Entry(symbol: "return", name: "Enter"),
-            Entry(symbol: "eye.slash", name: "Hide"),
+            Entry(symbol: "eye.slash", name: "Hide controls"),
             Entry(symbol: "menucard.fill", name: "Radial menu"),
             Entry(symbol: "plus", name: "Plus"),
             Entry(symbol: "minus", name: "Minus"),
@@ -554,45 +588,46 @@ enum ControlIcon {
     /// Keyboard codes to symbols, shared with the overlay's defaults so a control looks the same before and after a save.
     static func suggested(forKey key: Int) -> String? {
         switch key {
-        case 69: return "hand.tap.fill"            // E interact
-        case 340: return "figure.run"              // Shift run
-        case 341: return "scope"                   // Ctrl aim
-        case 32: return "bolt.fill"                // Space shove
-        case 67: return "figure.walk"              // C crouch
-        case 73: return "bag.fill"                 // I inventory
-        case 72: return "heart.fill"               // H health
-        case 77: return "map.fill"                 // M map
-        case 70: return "lightbulb.fill"           // F light
-        case 82: return "arrow.counterclockwise"   // R reload
-        case 88: return "arrow.up.forward"         // X rack
+        case 69: return "hand.tap.fill"                    // E interact
+        case 340: return "figure.run"                      // Shift run
+        case 341: return "scope"                           // Ctrl aim
+        case 32: return "hand.raised.fill"                 // Space shove
+        case 67: return "chevron.down.circle.fill"         // C crouch
+        case 73: return "bag.fill"                         // I inventory
+        case 72: return "heart.fill"                       // H health
+        case 77: return "map.fill"                         // M map
+        case 70: return "lightbulb.fill"                   // F light
+        case 82: return "arrow.triangle.2.circlepath"      // R reload
+        case 88: return "arrow.up.forward.circle"          // X rack
         case 256: return "escape"
-        case 258: return "rectangle.on.rectangle"  // Tab
+        case 258: return "arrow.right.to.line"             // Tab
         case 257: return "return"
-        case 86: return "car.fill"                 // V vehicle menu
-        case 78: return "engine.combustion"        // N engine
-        case 79: return "thermometer.medium"       // O heater
-        case 90: return "chair.fill"               // Z seat
-        case 81: return "speaker.wave.2.fill"      // Q horn
-        case 84: return "bubble.left.fill"         // T chat
-        case 71: return "shield.fill"              // G safety
-        case 74: return "book.fill"                // J info
-        case 76: return "book.fill"                // L skills
-        case 80: return "shield.fill"              // P protection
-        case 66: return "hammer.fill"              // B crafting
-        case 291: return "pause.fill"              // F2 pause
-        case 292: return "play.fill"               // F3 play
-        case 293, 294, 295: return "forward.fill"  // F4-F6 fast forward
+        case 86: return "car.fill"                         // V vehicle menu
+        case 78: return "engine.combustion"                // N engine
+        case 79: return "thermometer.medium"               // O heater
+        case 90: return "chair.fill"                       // Z seat
+        case 81: return "speaker.wave.3.fill"              // Q horn
+        case 84: return "bubble.left.fill"                 // T chat
+        case 71: return "shield.fill"                      // G safety
+        case 74: return "book.fill"                        // J info
+        case 76: return "book.fill"                        // L skills
+        case 80: return "shield.fill"                      // P protection
+        case 66: return "hammer.fill"                      // B crafting
+        case 291: return "pause.fill"                      // F2 pause
+        case 292: return "play.fill"                       // F3 play
+        case 293, 294, 295: return "forward.fill"          // F4-F6 fast forward
         default: return nil
         }
     }
     /// The icon a control gets by default, so a new button already looks right; nil means text.
     static func suggested(for item: TouchItem) -> String? {
         switch item.kind {
-        case .mouse: return item.code == 1 ? "scope" : "hand.point.up.left.fill"
+        case .mouse: return item.code == 1 ? "scope" : "cursorarrow.click"
         case .keyboard: return "keyboard"
         case .hide: return "eye.slash"
         case .radial: return "menucard.fill"
         case .drive: return "car.fill"
+        case .combo: return "speedometer"
         case .key: return suggested(forKey: item.code)
         default: return nil                                // sticks, scroll, PAD/TCH, fire mode: text or their own look
         }
@@ -601,7 +636,7 @@ enum ControlIcon {
     static func suggested(for slot: RadialSlot) -> String? {
         switch slot.kind {
         case .key: return suggested(forKey: slot.code)
-        case .mouse: return slot.code == 1 ? "scope" : "hand.point.up.left.fill"
+        case .mouse: return slot.code == 1 ? "scope" : "cursorarrow.click"
         case .keyboard: return "keyboard"
         case .hide: return "eye.slash"
         case .drive: return "car.fill"
@@ -955,7 +990,23 @@ struct TouchLayoutEditor: View {
                     }
                 }
 
-                if let i = selectedIndex { inspector(i) }
+                if let i = selectedIndex {
+                    VStack(alignment: .leading, spacing: M.gap) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "slider.horizontal.3").font(.system(size: 10, weight: .semibold))
+                            Text("SELECTED CONTROL").font(.system(size: 9.5, weight: .bold)).tracking(0.8)
+                            Spacer()
+                            Button { Haptics.tap(); selected = nil } label: {
+                                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                            }.buttonStyle(.plain)
+                        }
+                        .foregroundStyle(.white.opacity(0.42))
+                        inspector(i)
+                    }
+                    .padding(10)
+                    .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.10), lineWidth: 1))
+                }
             }
         }
         .scrollBounceBehavior(.basedOnSize)
@@ -985,6 +1036,10 @@ struct TouchLayoutEditor: View {
                     if let n = layout.items.indices.last { layout.items[n].target = layout.items.first { $0.kind == .mouse && $0.code == 0 }?.id }
                 }
                 Button("Driving toggle") { add(.drive, label: "DRIVE", code: 0, size: 54) }
+                Button("Key combo") {      // two keys at once, e.g. the game's Shift+W cruise control
+                    add(.combo, label: "C+", code: 340, size: 54)
+                    if let n = layout.items.indices.last { layout.items[n].code2 = 87 }
+                }
                 if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
             }
         } label: { actionPill("Add", system: "plus") }
@@ -1165,6 +1220,41 @@ struct TouchLayoutEditor: View {
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
+            if item.kind == .combo {
+                row("Sends") {
+                    Menu {
+                        ForEach(KeyCatalog.groups, id: \.0) { group in
+                            Menu(group.0) {
+                                ForEach(group.1, id: \.1) { entry in
+                                    Button(entry.0) { layout.items[i].code = entry.1; layout.items[i].icon = ControlIcon.suggested(forKey: entry.1) }
+                                }
+                            }
+                        }
+                    } label: { field { Text(KeyCatalog.name(key: item.code)) } }
+                }
+                row("With") {
+                    Menu {
+                        Button("Nothing") { layout.items[i].code2 = nil }
+                        ForEach(KeyCatalog.groups, id: \.0) { group in
+                            Menu(group.0) {
+                                ForEach(group.1, id: \.1) { entry in
+                                    Button(entry.0) { layout.items[i].code2 = entry.1 }
+                                }
+                            }
+                        }
+                    } label: { field { Text(item.code2.map { KeyCatalog.name(key: $0) } ?? "Nothing") } }
+                }
+                row("Label") {
+                    TextField("Label", text: Binding(get: { layout.items[i].label }, set: { layout.items[i].label = String($0.prefix(5)).uppercased() }))
+                        .multilineTextAlignment(.center)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .frame(width: 90, height: M.control)
+                        .background(Color.white.opacity(0.12), in: Capsule())
+                }
+                Text("Both keys are held while the button is pressed. The game uses Shift+W for cruise control (and Shift+S to slow down), which is what the driving layout's C+ / C- buttons send.")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+            }
             if item.kind == .drive {
                 row("Label") {
                     TextField("Label", text: Binding(get: { layout.items[i].label }, set: { layout.items[i].label = String($0.prefix(5)).uppercased() }))
@@ -1251,6 +1341,7 @@ struct TouchLayoutEditor: View {
         case .radial: return item.label.isEmpty ? "Radial menu" : "Radial menu (\(item.label))"
         case .firemode: return "Fire mode toggle"
         case .drive: return "Driving toggle"
+        case .combo: return "Key combo"
         case .padstick: return item.code == 0 ? "Left stick" : "Right stick"
         default: return item.label.isEmpty ? "Control" : item.label
         }
@@ -1279,8 +1370,8 @@ struct TouchLayoutEditor: View {
                 Text("Ring").tag(0); Text("Arc").tag(1); Text("Column").tag(2); Text("Row").tag(3)
             }.pickerStyle(.segmented)
         }
-        row("Spacing", value: String(format: "%.0f%%", (layout.items[i].radialSpread ?? 1) * 100)) {
-            Slider(value: Binding(get: { layout.items[i].radialSpread ?? 1 }, set: { v in layout.items[i].radialSpread = abs(v - 1) < 0.001 ? nil : v }), in: 0.6...1.6, step: 0.05).tint(.white)
+        row("Spacing", value: String(format: "%.0f%%", (layout.items[i].radialSpread ?? 1.15) * 100)) {
+            Slider(value: Binding(get: { layout.items[i].radialSpread ?? 1.15 }, set: { v in layout.items[i].radialSpread = abs(v - 1.15) < 0.005 ? nil : v }), in: 0.6...1.8, step: 0.05).tint(.white)
         }
         row("Tap sends") {
             Menu {
@@ -1409,6 +1500,7 @@ struct TouchLayoutEditor: View {
         case .hide: return "HIDE"
         case .mode: return "PAD / TCH"
         case .drive: return "Driving toggle"
+        case .combo: return "Key combo"
         case .firemode: return "Fire mode toggle (\(layout.items.first { $0.id == b.target }.map(buttonName) ?? "?"))"
         default: return b.label
         }

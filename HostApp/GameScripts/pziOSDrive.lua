@@ -9,6 +9,8 @@
 local last = nil
 local ticks = 0
 
+print("[pziOS] drive script loaded")
+
 local function write(inCar)
     local w = getFileWriter("pzios_vehicle.txt", true, false)
     if not w then return end

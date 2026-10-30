@@ -261,24 +261,27 @@ static UIImage *icon_image(NSString *name, CGFloat points) {
 /// defaults in its catalogue, so a button looks the same before and after a layout is saved.
 static NSString *default_icon_for_key(int code) {
     switch (code) {
-        case 69:  return @"hand.tap.fill";          // E, interact
-        case 340: return @"figure.run";              // Shift, run
-        case 341: return @"scope";                   // Ctrl, aim
-        case 32:  return @"bolt.fill";               // Space, shove
-        case 67:  return @"figure.walk";             // C, crouch
-        case 73:  return @"bag.fill";                // I, inventory
-        case 72:  return @"heart.fill";              // H, health
-        case 77:  return @"map.fill";                // M, map
-        case 70:  return @"lightbulb.fill";          // F, light
-        case 256: return @"escape";                  // Esc
-        case 258: return @"rectangle.on.rectangle";  // Tab
-        case 257: return @"return";                  // Enter
+        case 69:  return @"hand.tap.fill";                  // E, interact
+        case 340: return @"figure.run";                      // Shift, run
+        case 341: return @"scope";                           // Ctrl, aim
+        case 32:  return @"hand.raised.fill";                // Space, shove
+        case 67:  return @"chevron.down.circle.fill";        // C, crouch
+        case 73:  return @"bag.fill";                        // I, inventory
+        case 72:  return @"heart.fill";                      // H, health
+        case 77:  return @"map.fill";                        // M, map
+        case 70:  return @"lightbulb.fill";                  // F, light
+        case 82:  return @"arrow.triangle.2.circlepath";     // R, reload
+        case 88:  return @"arrow.up.forward.circle";         // X, rack
+        case 256: return @"escape";                          // Esc
+        case 258: return @"arrow.right.to.line";             // Tab
+        case 257: return @"return";                          // Enter
         default:  return nil;
     }
 }
 
 @interface ZOButton : UIView
 @property (nonatomic) int kind, code;
+@property (nonatomic) int code2;                    // kind 9 (combo): the second key pressed and released with code
 @property (nonatomic, strong) UILabel *label;
 @property (nonatomic, strong) UIImageView *iconView;
 @property (nonatomic, copy) NSString *iconName;     // SF Symbol; shown instead of the label while icons are on
@@ -391,6 +394,10 @@ static NSString *default_icon_for_key(int code) {
     else if (d && self.kind == 4) [gv toggleMode];
     else if (d && self.kind == 7) [gv cycleFireModeFrom:self];
     else if (d && self.kind == 8) [gv toggleDriving];
+    else if (self.kind == 9) {                       // combo: two keys together (Shift+W for cruise control)
+        if (self.code) push_key(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
+        if (self.code2) push_key(self.code2, d ? GLFW_PRESS : GLFW_RELEASE);
+    }
     if (d && self.kind == 0 && self.code == 256) [gv releaseLatches];     // ESC (menus, pause) lets go of any locked button
 }
 - (void)releaseLatch {
@@ -591,7 +598,7 @@ static BOOL scroll_reversed(void) { return [NSUserDefaults.standardUserDefaults 
 // Where a radial menu's options go. Writes each option's centre into pts and returns the size of one option; the whole group is then
 // moved onto the screen. A thumb is matched to the option whose centre is nearest, which stays correct after that move.
 static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spread, CGFloat W, CGFloat H, CGPoint *pts) {
-    double s = spread <= 0 ? 1.0 : MAX(0.6, MIN(1.6, spread));
+    double s = spread <= 0 ? 1.15 : MAX(0.6, MIN(1.8, spread));       // 1.15 keeps options from touching on a phone
     CGSize item = shape == 2 ? CGSizeMake(104, 38) : CGSizeMake(58, 58);
     if (n <= 0) return item;
     int side = c.x > W / 2 ? -1 : 1;                                       // column and row open towards the middle of the screen
@@ -599,19 +606,19 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         CGFloat dl = c.x, dr = W - c.x, dt = c.y, db = H - c.y, m = MIN(MIN(dl, dr), MIN(dt, db));
         double out = m == dr ? 180 : m == dl ? 0 : m == dt ? 90 : -90;      // facing away from the nearest edge
         double sign = (out == 180 || out == 90) ? -1 : 1;                   // first option at the top (or the left)
-        CGFloat R = MAX(80, 64 / (2 * sin(M_PI / (2.0 * n)))) * s;
+        CGFloat R = MAX(92, 74 / (2 * sin(M_PI / (2.0 * n)))) * s;
         for (int i = 0; i < n; i++) {
             double a = out - 90 * sign + sign * 180.0 * (i + 0.5) / n;
             pts[i] = CGPointMake(c.x + R * cos(a * M_PI / 180), c.y + R * sin(a * M_PI / 180));
         }
     } else if (shape == 2) {
-        CGFloat gap = 6 * s, x = c.x + side * (btn / 2 + 12 + item.width / 2), total = n * item.height + (n - 1) * gap;
+        CGFloat gap = 9 * s, x = c.x + side * (btn / 2 + 14 + item.width / 2), total = n * item.height + (n - 1) * gap;
         for (int i = 0; i < n; i++) pts[i] = CGPointMake(x, c.y - total / 2 + item.height / 2 + i * (item.height + gap));
     } else if (shape == 3) {
-        CGFloat gap = 6 * s;
-        for (int i = 0; i < n; i++) pts[i] = CGPointMake(c.x + side * (btn / 2 + 8 + item.width / 2 + i * (item.width + gap)), c.y);
+        CGFloat gap = 9 * s;
+        for (int i = 0; i < n; i++) pts[i] = CGPointMake(c.x + side * (btn / 2 + 10 + item.width / 2 + i * (item.width + gap)), c.y);
     } else {
-        CGFloat R = (n <= 4 ? 76 : n <= 6 ? 88 : 100) * s;
+        CGFloat R = (n <= 4 ? 90 : n <= 6 ? 106 : 120) * s;
         for (int i = 0; i < n; i++) {
             double a = -90.0 + 360.0 * i / n;
             pts[i] = CGPointMake(c.x + R * cos(a * M_PI / 180), c.y + R * sin(a * M_PI / 180));
@@ -1264,7 +1271,7 @@ static void fps_note_frame(void) {
             r.slots = sl;
             r.tapSlot = [it[@"tapSlot"] respondsToSelector:@selector(intValue)] ? [it[@"tapSlot"] intValue] : -1;
             r.shape = [it[@"radialShape"] respondsToSelector:@selector(intValue)] ? MAX(0, MIN(3, [it[@"radialShape"] intValue])) : 0;
-            r.spread = [it[@"radialSpread"] respondsToSelector:@selector(doubleValue)] ? MAX(0.6, MIN(1.6, [it[@"radialSpread"] doubleValue])) : 1.0;
+            r.spread = [it[@"radialSpread"] respondsToSelector:@selector(doubleValue)] ? MAX(0.6, MIN(1.8, [it[@"radialSpread"] doubleValue])) : 1.15;
             [r setFace:label icon:icon];
             if ([r holds:@"hide"]) radialHide = YES;
             if ([r holds:@"mode"]) radialMode = YES;
@@ -1299,7 +1306,7 @@ static void fps_note_frame(void) {
             pb.norm = norm; pb.alpha = alpha; pb.tag = tag++;
             [self addSubview:pb]; [self.controls addObject:pb]; continue;
         }
-        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 7 : [kind isEqualToString:@"drive"] ? 8 : -1;
+        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 7 : [kind isEqualToString:@"drive"] ? 8 : [kind isEqualToString:@"combo"] ? 9 : -1;
         if (k < 0) continue;
         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
         b.itemId = [it[@"id"] isKindOfClass:NSString.class] ? it[@"id"] : nil;
@@ -1312,6 +1319,7 @@ static void fps_note_frame(void) {
             b.fireMode = [fm respondsToSelector:@selector(intValue)] ? MAX(0, MIN(2, [fm intValue])) : 0;
         }
         if (k == 7) b.targetId = [it[@"target"] isKindOfClass:NSString.class] ? it[@"target"] : nil;
+        if (k == 9) b.code2 = [it[@"code2"] respondsToSelector:@selector(intValue)] ? [it[@"code2"] intValue] : 0;
         [b refreshIcon];
         [self addSubview:b];
         if (k == 3) { self.hideButton = b; b.tag = 19; }
@@ -1330,14 +1338,36 @@ static void fps_note_frame(void) {
 }
 // The vehicle marker the game's Lua writes (see pziOSDrive.lua). The game's own file API writes into one of these places
 // depending on the version, so all of the likely ones are checked; no marker simply means no automatic switching.
+static NSString *read_trimmed(NSString *path) {
+    NSString *s = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    s = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return s.length ? s : nil;
+}
+
+/// Every place a game build might put the marker: the Zomboid folder's root (where getFileWriter normally writes), its Lua
+/// folder (where some builds resolve names), the pziOS Documents folder, and any Documents/<x>/Zomboid one level down.
 static NSString *vehicle_state_file(void) {
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (docs.count == 0) return nil;
     NSString *base = docs.firstObject;
-    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt", @"pzios_vehicle.txt"]) {
-        NSString *s = [NSString stringWithContentsOfFile:[base stringByAppendingPathComponent:rel] encoding:NSUTF8StringEncoding error:nil];
-        s = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (s.length) return s;
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt",
+                            @"Zomboid/pzios_vehicle.txt", @"Zomboid/Lua/pzios_vehicle.txt", @"pzios_vehicle.txt"]) {
+        [paths addObject:[base stringByAppendingPathComponent:rel]];
+    }
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *root in @[base, [base stringByAppendingPathComponent:@"home"]]) {
+        for (NSString *sub in [fm contentsOfDirectoryAtPath:root error:nil]) {
+            [paths addObject:[[[root stringByAppendingPathComponent:sub] stringByAppendingPathComponent:@"Zomboid"]
+                              stringByAppendingPathComponent:@"pzios_vehicle.txt"]];
+        }
+    }
+    for (NSString *p in paths) {
+        NSString *s = read_trimmed(p);
+        if (!s) continue;
+        static BOOL logged;
+        if (!logged) { logged = YES; glfwi_log("vehicle marker: %s", p.UTF8String); }
+        return s;
     }
     return nil;
 }
@@ -1368,7 +1398,9 @@ static NSString *log_vehicle_state(void) {
 - (NSString *)layoutJSONDriving:(BOOL)driving {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     if (vpad_active()) return [d stringForKey:@"zom.padLayout"] ?: [d stringForKey:@"zom.touchLayout"];
-    return [d stringForKey:(driving ? @"zom.drivingLayout" : @"zom.touchLayout")];
+    NSString *json = [d stringForKey:(driving ? @"zom.drivingLayout" : @"zom.touchLayout")];
+    if (json.length == 0 && driving) json = [d stringForKey:@"zom.touchLayout"];   // no driving layout saved: never fall back to the bare built-ins
+    return json;
 }
 - (void)removeControlViews {
     [self releaseLatches];
@@ -1404,14 +1436,19 @@ static NSString *log_vehicle_state(void) {
     if (self.drivePoll || vpad_active()) return;
     self.lastVehicleState = -1;                      // read the marker once, then only react to changes
     __weak GLFWiOSView *ws = self;
-    self.drivePoll = [NSTimer scheduledTimerWithTimeInterval:0.6 repeats:YES block:^(NSTimer *t) { [ws pollVehicle]; }];
+    self.drivePoll = [NSTimer timerWithTimeInterval:0.6 repeats:YES block:^(NSTimer *t) { [ws pollVehicle]; }];
+    [NSRunLoop.mainRunLoop addTimer:self.drivePoll forMode:NSRunLoopCommonModes];   // keeps polling while the game holds the run loop
 }
 - (void)pollVehicle {
     id autoPref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.drivingAuto"];
     if (autoPref && ![autoPref boolValue]) return;
     NSString *s = vehicle_state_file();
     if (s.length == 0) s = log_vehicle_state();
-    if (s.length == 0) return;
+    if (s.length == 0) {
+        static int misses;
+        if (++misses == 10) glfwi_log("vehicle marker: nothing found in Documents, home/Zomboid or its Lua folder, or this run's jvm.log (manual DRIVE still works)");
+        return;
+    }
     NSInteger state = s.integerValue != 0 ? 1 : 0;
     // Only a *change* switches layouts, so pressing DRIVE or FOOT by hand is respected until you next get in or out of a
     // vehicle instead of being undone by the next poll.
