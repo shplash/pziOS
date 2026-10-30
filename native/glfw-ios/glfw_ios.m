@@ -404,12 +404,18 @@ static void vpad_set_stick(int stick, float x, float y) {
 @end
 
 // Scroll strip: a tall narrow bar. Sliding a finger up or down on it sends mouse-wheel notches at the cursor, so containers scroll
-// (and the world zooms) with one thumb instead of a two-finger gesture. "zom.scrollSpeed" (notches per 16 pt of travel) and
-// "zom.scrollInvert" come from the touch editor.
+// (and the world zooms) with one thumb instead of a two-finger gesture. The notches are paced by a display link from the finger's
+// speed instead of being sent in bursts per touch event, which is what makes it smooth; a quick flick can carry on for a moment
+// when "Momentum" is on. From the touch editor: zom.scrollSpeed, zom.scrollSens, zom.scrollInvert and zom.scrollMomentum.
 @interface ZOScrollStrip : UIView
 @property (nonatomic) CGPoint norm;
 @property (nonatomic, weak) UITouch *touch;
-@property (nonatomic) CGFloat lastY, carry;
+@property (nonatomic, strong) CADisplayLink *link;
+@property (nonatomic) double linkTime;
+@property (nonatomic) CGFloat velocity;      // points per second
+@property (nonatomic) CGFloat carry;         // wheel notches not sent yet
+@property (nonatomic) CGPoint lastPoint;
+@property (nonatomic) double sampleTime;
 @end
 @implementation ZOScrollStrip
 - (instancetype)initWithFrame:(CGRect)f {
@@ -427,28 +433,81 @@ static void vpad_set_stick(int stick, float x, float y) {
     }
     return self;
 }
+- (void)dealloc { [_link invalidate]; }
+- (void)didMoveToWindow { if (!self.window) { [self.link invalidate]; self.link = nil; } }   // never keep a display link alive after removal
+
+// One wheel notch per this many points of finger travel: 16 pt at Speed 1x and Sensitivity 1x. Higher either and fewer points
+// of travel send the same notch, so the strip covers the same list with less movement.
+static double scroll_points_per_notch(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    double speed = [d doubleForKey:@"zom.scrollSpeed"]; if (!(speed > 0)) speed = 1.0;
+    double sens = [d doubleForKey:@"zom.scrollSens"]; if (!(sens > 0)) sens = 1.0;
+    return MAX(3.0, 16.0 / MAX(0.05, speed * sens));
+}
+static BOOL scroll_momentum(void) {
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.scrollMomentum"];
+    return v ? [v boolValue] : NO;
+}
+static BOOL scroll_reversed(void) { return [NSUserDefaults.standardUserDefaults boolForKey:@"zom.scrollInvert"]; }
+
+- (void)startLink {
+    if (self.link) return;
+    self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
+    self.link.preferredFrameRateRange = CAFrameRateRangeMake(60, 120, 120);
+    [self.link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    self.linkTime = 0;
+}
+- (void)stopLink {
+    [self.link invalidate];
+    self.link = nil; self.velocity = 0; self.carry = 0;
+}
+- (void)tick:(CADisplayLink *)l {
+    double now = CACurrentMediaTime();
+    double dt = self.linkTime > 0 ? now - self.linkTime : l.duration;
+    self.linkTime = now;
+    dt = MAX(1.0 / 240.0, MIN(0.05, dt));
+    if (!self.touch) {                                          // released: a flick carries on for a moment, or stops dead
+        self.velocity = scroll_momentum() ? self.velocity * exp(-dt * 6.0) : 0;
+        if (fabs(self.velocity) < 15) self.velocity = 0;
+    } else if (CACurrentMediaTime() - self.sampleTime > 0.08) { // finger held still: coast to a stop instead of running away
+        self.velocity *= exp(-dt * 12.0);
+        if (fabs(self.velocity) < 15) self.velocity = 0;
+    }
+    double ppn = scroll_points_per_notch();
+    self.carry += self.velocity * dt / ppn;
+    self.carry = MAX(-8, MIN(8, self.carry));                   // never queue a pile of notches
+    int sent = 0;
+    while (fabs(self.carry) >= 1 && sent < 4) {
+        int dir = self.carry > 0 ? 1 : -1;
+        self.carry -= dir; sent++;
+        Ev ev = {.type = EV_SCROLL, .x = 0, .y = scroll_reversed() ? -dir : dir}; push_event(ev);
+    }
+    if (!self.touch && self.velocity == 0 && fabs(self.carry) < 1) [self stopLink];
+}
+
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     if (self.touch) return;
-    self.touch = ts.anyObject; self.lastY = [self.touch locationInView:self].y; self.carry = 0;
+    self.touch = ts.anyObject;
+    self.lastPoint = [self.touch locationInView:self];
+    self.velocity = 0; self.carry = 0; self.sampleTime = self.touch.timestamp;
     self.backgroundColor = [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.5];
+    [self startLink];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     if (!self.touch || ![ts containsObject:self.touch]) return;
-    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    double k = [d doubleForKey:@"zom.scrollSpeed"]; if (k <= 0) k = 1.0;
-    CGFloat y = [self.touch locationInView:self].y;
-    CGFloat step = (self.lastY - y) / 16.0 * k * ([d boolForKey:@"zom.scrollInvert"] ? -1 : 1);
-    if (step > 4) step = 4; else if (step < -4) step = -4;          // a stalled finger must not jump the view
-    self.carry += step; self.lastY = y;
-    int sent = 0;
-    while (fabs(self.carry) >= 1 && sent < 6) {                     // whole notches, like a real wheel
-        int n = self.carry > 0 ? 1 : -1; self.carry -= n; sent++;
-        Ev ev = {.type = EV_SCROLL, .x = 0, .y = n}; push_event(ev);
-    }
+    CGPoint p = [self.touch locationInView:self];
+    double t = self.touch.timestamp, dt = t - self.sampleTime;
+    if (dt <= 0 || dt > 0.12) dt = 1.0 / 60.0;
+    CGFloat v = (self.lastPoint.y - p.y) / dt;                  // a finger moving up scrolls up
+    v = MAX(-6000, MIN(6000, v));
+    self.velocity = self.velocity * 0.6 + v * 0.4;              // smoothed, so one jittery sample does not jump the view
+    self.lastPoint = p; self.sampleTime = t;
 }
 - (void)finish:(NSSet<UITouch *> *)ts {
     if (!self.touch || ![ts containsObject:self.touch]) return;
-    self.touch = nil; self.carry = 0; self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
+    self.touch = nil;
+    self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
+    if (!scroll_momentum() || fabs(self.velocity) < 60) self.velocity = 0;
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
@@ -628,10 +687,20 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts cancelled:YES]; }
 @end
 
+// Movement stick. It still sends WASD, so the general keyboard layout of the game is untouched, but it behaves like a
+// controller stick: a dead zone so a resting thumb does nothing, directions that engage and release at different points
+// (hysteresis) so a thumb held between two directions does not chatter, and an optional Run or Sprint key at full push,
+// the way a controller's stick runs when it is held to the edge. The touch editor writes deadZone, pushKey, pushAt and
+// the arrow-key option into "zom.touchLayout" (stickDead, stickPushKey, stickPushAt, stickArrows).
 @interface ZOJoystick : UIView
 @property (nonatomic) BOOL up, left, down, right;
 @property (nonatomic, strong) CAShapeLayer *thumb;
 @property (nonatomic) CGPoint norm;
+@property (nonatomic) CGFloat deadZone;          // fraction of the radius: 0.05...0.55
+@property (nonatomic) int pushKey;               // GLFW key held at full push; 0 = none (Shift = run, Alt = sprint)
+@property (nonatomic) CGFloat pushAt;            // 0.5...1.0 of the travel past the dead zone
+@property (nonatomic) int keyUp, keyLeft, keyDown, keyRight;
+@property (nonatomic) BOOL pushing;
 @end
 @implementation ZOJoystick
 - (instancetype)initWithFrame:(CGRect)f {
@@ -645,21 +714,46 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
         self.thumb.position = CGPointMake(f.size.width / 2, f.size.height / 2);
         [self.layer addSublayer:self.thumb];
+        self.deadZone = 0.18; self.pushKey = 340; self.pushAt = 0.85;      // Shift at full push, like a controller's run
+        self.keyUp = 87; self.keyLeft = 65; self.keyDown = 83; self.keyRight = 68;
     }
     return self;
 }
+- (void)set:(BOOL)v key:(int)key flag:(BOOL *)f { if (*f != v) { *f = v; push_key(key, v ? GLFW_PRESS : GLFW_RELEASE); } }
 - (void)update:(UITouch *)t {
     CGFloat r = self.bounds.size.width / 2; CGPoint c = CGPointMake(r, r), p = [t locationInView:self];
     CGFloat dx = p.x - c.x, dy = p.y - c.y, len = hypot(dx, dy);
     if (len > r) { dx *= r / len; dy *= r / len; len = r; }
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(c.x + dx, c.y + dy); [CATransaction commit];
-    CGFloat thr = r * 0.30;
-    [self set:dy < -thr key:87 flag:&_up]; [self set:dx < -thr key:65 flag:&_left];
-    [self set:dy > thr key:83 flag:&_down]; [self set:dx > thr key:68 flag:&_right];
+
+    CGFloat mag = r > 0 ? len / r : 0;
+    CGFloat dz = MAX(0.02, MIN(0.60, self.deadZone));
+    CGFloat travel = mag <= dz ? 0 : (mag - dz) / MAX(0.0001, 1 - dz);        // 0 at the dead zone, 1 at the rim
+    CGFloat ux = mag > 0 ? dx / r / mag : 0, uy = mag > 0 ? dy / r / mag : 0;  // unit direction
+    CGFloat ax = ux * travel, ay = uy * travel;
+
+    // Hysteresis: a direction engages at 0.35 of the travel and releases only below 0.24.
+    CGFloat on = 0.35, off = 0.24;
+    [self set:ay < -(self.up ? off : on) key:self.keyUp flag:&_up];
+    [self set:ay > (self.down ? off : on) key:self.keyDown flag:&_down];
+    [self set:ax < -(self.left ? off : on) key:self.keyLeft flag:&_left];
+    [self set:ax > (self.right ? off : on) key:self.keyRight flag:&_right];
+
+    // Full push holds Run (or Sprint) until the stick comes back a little, like a controller stick at the rim.
+    if (self.pushKey != 0) {
+        CGFloat at = MAX(0.5, MIN(1.0, self.pushAt));
+        BOOL want = travel >= (self.pushing ? at - 0.12 : at);
+        if (want != self.pushing) {
+            self.pushing = want;
+            push_key(self.pushKey, want ? GLFW_PRESS : GLFW_RELEASE);
+            if (want) [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+        }
+    }
 }
-- (void)set:(BOOL)v key:(int)key flag:(BOOL *)f { if (*f != v) { *f = v; push_key(key, v ? GLFW_PRESS : GLFW_RELEASE); } }
 - (void)reset {
-    [self set:NO key:87 flag:&_up]; [self set:NO key:65 flag:&_left]; [self set:NO key:83 flag:&_down]; [self set:NO key:68 flag:&_right];
+    [self set:NO key:self.keyUp flag:&_up]; [self set:NO key:self.keyLeft flag:&_left];
+    [self set:NO key:self.keyDown flag:&_down]; [self set:NO key:self.keyRight flag:&_right];
+    if (self.pushing) { self.pushing = NO; if (self.pushKey) push_key(self.pushKey, GLFW_RELEASE); }
     CGFloat r = self.bounds.size.width / 2;
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r, r); [CATransaction commit];
 }
@@ -1035,6 +1129,11 @@ static void fps_note_frame(void) {
         }
         if ([kind isEqualToString:@"stick"]) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
+            id dz = it[@"stickDead"], pk = it[@"stickPushKey"], pa = it[@"stickPushAt"], ks = it[@"stickArrows"];
+            j.deadZone = [dz respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(0.55, [dz doubleValue])) : 0.18;
+            j.pushKey = [pk respondsToSelector:@selector(intValue)] ? [pk intValue] : 340;      // Shift: run at full push
+            j.pushAt = [pa respondsToSelector:@selector(doubleValue)] ? MAX(0.5, MIN(1.0, [pa doubleValue])) : 0.85;
+            if ([ks respondsToSelector:@selector(boolValue)] && [ks boolValue]) { j.keyUp = 265; j.keyLeft = 263; j.keyDown = 264; j.keyRight = 262; }
             [self addSubview:j]; [self.controls addObject:j]; continue;
         }
         if ([kind isEqualToString:@"padstick"]) {
@@ -1141,9 +1240,8 @@ static void fps_note_frame(void) {
     for (UIView *v in self.subviews) {
         CGPoint np = CGPointZero;
         if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm; else if ([v isKindOfClass:ZOVPadStick.class]) np = ((ZOVPadStick *)v).norm; else if ([v isKindOfClass:ZOScrollStrip.class]) np = ((ZOScrollStrip *)v).norm; else if ([v isKindOfClass:ZORadial.class]) np = ((ZORadial *)v).norm;
-        if (np.x != 0 || np.y != 0) {      // saved layout
-            CGFloat hw = v.bounds.size.width / 2, hh = v.bounds.size.height / 2;      // the scroll strip is tall, so keep the whole bar on screen
-            v.center = CGPointMake(MIN(MAX(np.x * W, hw), W - hw), MIN(MAX(np.y * H, hh), H - hh));
+        if (np.x != 0 || np.y != 0) {      // saved layout: used exactly where the editor showed it
+            v.center = CGPointMake(np.x * W, np.y * H);      // no clamping here, or controls would move after the fact
             continue;
         }
         switch (v.tag) {

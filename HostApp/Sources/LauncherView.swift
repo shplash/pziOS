@@ -899,7 +899,7 @@ struct SettingsView: View {
                 Row(id: virtualPad ? "padedit" : "touch", title: virtualPad ? "Edit gamepad layout" : "Edit touch layout",
                     kind: .action(destructive: false) { editor = virtualPad ? .pad : .touch }, group: "Layout",
                     detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
-                                       : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own."),
+                                       : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own. Presets (Default, Claw, Claw V, Pro, Max, Minimal) are a quick start, and the editor shows the safe area and the game's UI margins so controls land exactly where you put them."),
                 Row(id: "ctrlstatus", title: controllerStatus, kind: .info, group: "Real controller"),
                 Row(id: "deadzone", title: "Stick deadzone", kind: .slider(0...0.95, deadZoneBinding, String(format: "%.0f%%", controllerConfig.deadZone * 100)),
                     detail: "How far a stick must move before the game sees it. Raise it if your character drifts with the sticks at rest."),
