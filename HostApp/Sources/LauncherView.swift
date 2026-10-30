@@ -705,7 +705,7 @@ private enum Tab: Int, CaseIterable {
     }
 }
 
-private enum Editor: String, Identifiable, Equatable { case touch, pad, margins, setup, controller; var id: String { rawValue } }
+private enum Editor: String, Identifiable, Equatable { case touch, pad, driving, margins, setup, controller; var id: String { rawValue } }
 
 /// One line on a settings page. Pages are plain data, so the same rows drive touch, the focus ring and gamepad input.
 struct Row: Identifiable {
@@ -914,6 +914,10 @@ struct SettingsView: View {
                     kind: .action(destructive: false) { editor = virtualPad ? .pad : .touch }, group: "Layout",
                     detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
                                        : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own. Presets (Default, Claw, Claw V, Pro, Max, Minimal) are a quick start, and the editor shows the safe area and the game's UI margins so controls land exactly where you put them."),
+            ] + (virtualPad ? [] : [
+                Row(id: "drivingedit", title: "Edit driving layout", kind: .action(destructive: false) { editor = .driving }, group: "Layout",
+                    detail: "The layout the game switches to in a vehicle: steering arrows, gas, brake, a handbrake that latches and Shift+W/Shift+S cruise control. Also reachable from the On foot / Driving switch in the editor."),
+            ]) + [
                 Row(id: "ctrlstatus", title: controllerStatus, kind: .info, group: "Real controller"),
                 Row(id: "deadzone", title: "Stick deadzone", kind: .slider(0...0.95, deadZoneBinding, String(format: "%.0f%%", controllerConfig.deadZone * 100)),
                     detail: "How far a stick must move before the game sees it. Raise it if your character drifts with the sticks at rest."),
@@ -1021,6 +1025,7 @@ struct SettingsView: View {
             switch e {
             case .touch: TouchLayoutEditor()
             case .pad: TouchLayoutEditor(pad: true)
+            case .driving: TouchLayoutEditor(driving: true)
             case .margins: ScreenMarginEditor()
             case .setup: SetupView(model: model, pad: pad)
             case .controller: ControllerEditor()

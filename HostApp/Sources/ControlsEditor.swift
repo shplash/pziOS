@@ -656,7 +656,12 @@ struct TouchLayoutEditor: View {
     var pad = false            // true: edit the virtual gamepad layout instead of the keyboard and mouse one
     @Environment(\.dismiss) private var dismiss
     @State private var layout: TouchLayout
-    init(pad: Bool = false) { self.pad = pad; _layout = State(initialValue: TouchLayoutStore.load(pad: pad)) }
+    init(pad: Bool = false, driving: Bool = false) {
+        self.pad = pad
+        let driving = driving && !pad
+        _driving = State(initialValue: driving)
+        _layout = State(initialValue: TouchLayoutStore.load(pad: pad, driving: driving))
+    }
     @State private var selected: String?
     @State private var panelOffset = CGSize.zero
     @State private var panelDrag = CGSize.zero
@@ -1597,7 +1602,7 @@ private struct Chip: View {
             } else {
                 if item.kind == .radial && item.label.isEmpty && !(iconsOn && !(item.icon ?? "").isEmpty) {
                     Image(systemName: "circle.hexagongrid.fill").font(.system(size: item.size * 0.34, weight: .semibold)).foregroundStyle(.white)
-                if iconsOn, let icon = item.icon, !icon.isEmpty, item.kind != .mode, item.kind != .firemode {
+                } else if iconsOn, let icon = item.icon, !icon.isEmpty, item.kind != .mode, item.kind != .firemode {
                     VStack(spacing: 0) {
                         Image(systemName: icon)
                             .font(.system(size: item.size * 0.30, weight: .semibold))
