@@ -159,6 +159,23 @@ static void install_ui_margin(NSString *docs, NSString *res) {
     printf("settings: UI margins %s (left %d, top %d, right %d, bottom %d game px), script %s\n", kName[level], m[0], m[1], m[2], m[3], src ? "installed" : "missing");
 }
 
+// Driving layout: ship the vehicle-state Lua script too, and drop any marker from the last session so the game starts on the
+// normal layout. The overlay watches the marker and swaps layouts by itself (see vehicle_state_file in glfw_ios.m).
+static void install_drive_script(NSString *docs) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *dir = [docs stringByAppendingPathComponent:@"game/media/lua/client"];
+    NSString *src = [[NSBundle mainBundle] pathForResource:@"pziOSDrive" ofType:@"lua"];
+    if (src && [fm fileExistsAtPath:dir]) {
+        NSString *dst = [dir stringByAppendingPathComponent:@"pziOSDrive.lua"];
+        NSData *a = [NSData dataWithContentsOfFile:src], *b = [NSData dataWithContentsOfFile:dst];
+        if (![a isEqualToData:b]) { [fm removeItemAtPath:dst error:nil]; [fm copyItemAtPath:src toPath:dst error:nil]; }
+    }
+    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt", @"pzios_vehicle.txt"]) {
+        [fm removeItemAtPath:[docs stringByAppendingPathComponent:rel] error:nil];
+    }
+    printf("settings: driving layout script %s\n", src ? "installed" : "missing");
+}
+
 // Default JVM arguments: written to Documents/launch.args when the file is missing, and replaced by a newer built-in default only while the
 // file is still an unmodified default (its first line is "# zomios-default vN"). A file without that marker is the user's own and is kept.
 static NSString *first_line(NSString *s) { NSRange r = [s rangeOfString:@"\n"]; return r.location == NSNotFound ? s : [s substringToIndex:r.location]; }
@@ -503,6 +520,7 @@ static BOOL g_wantPointerLock;
             else unsetenv("ZOMIOS_PAD_CONFIG");
         }
         install_ui_margin(docs, res);
+        install_drive_script(docs);
         apply_game_options(docs);
     }
     if (pref_int(@"zom.memLog", 0)) { setenv("ZOMIOS_GPULOG", "1", 1); setenv("ZOMIOS_MEMLOG", "5", 1); printf("settings: memory log every 5 s\n"); }       // developer switch, overrides the args file

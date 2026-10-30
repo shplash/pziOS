@@ -48,10 +48,11 @@ step exists.
 ## Features
 
 - **Play your own copy**: solo, mods, saves, direct-connect multiplayer.
-- **Touch controls**: a full layout editor with presets (Default, Claw, Claw V, Pro, Max, Driving, Minimal) and SF Symbol
+- **Touch controls**: a full layout editor with presets (Default, Claw, Claw V, Pro, Max, Minimal) and SF Symbol
   icons you can turn on or off, two-thumb aiming (drag to aim, hold to lock, fire modes), a movement stick that
   dead-zones, runs at the first mark and sprints when dragged past the rim, a scroll strip, radial menus and an aim
-  stick, saved layouts, and a virtual gamepad the game sees as a real controller.
+  stick, saved layouts, and a virtual gamepad the game sees as a real controller. A separate minimal **driving layout**
+  takes over by itself when you get into a vehicle (or from a DRIVE button), and hands back when you get out.
 - **Real controllers**: remappable, with a stick deadzone, a live input preview, battery level, and optional
   automatic hiding of the on-screen controls.
 - **Display**: render resolution presets, UI margins sized to your screen (Auto, or set your own), up to 120 Hz,

@@ -6,7 +6,7 @@ import UIKit
 // MARK: - Touch layout model
 
 struct TouchItem: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, radial, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
+    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, radial, padstick, padbtn, padtrig, drive }     // pad*: virtual gamepad controls; drive: switches between the on-foot and driving layouts
     var id: String
     var kind: Kind
     var label: String
@@ -48,7 +48,7 @@ struct TouchLayout: Codable, Equatable {
 
 /// One option of a radial menu: a key, a mouse button, or one of the overlay's own controls.
 struct RadialSlot: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case none, key, mouse, keyboard, hide, mode, firemode }
+    enum Kind: String, Codable { case none, key, mouse, keyboard, hide, mode, firemode, drive }
     var id = UUID().uuidString
     var kind: Kind = .none
     var code: Int = 0
@@ -137,29 +137,35 @@ struct TouchPreset: Codable, Identifiable, Equatable {
 }
 
 enum TouchPresetStore {
-    private static func key(_ pad: Bool) -> String { pad ? "zom.padPresets" : "zom.touchPresets" }
-    private static func nameKey(_ pad: Bool) -> String { pad ? "zom.padPresetName" : "zom.touchPresetName" }
-    static func load(pad: Bool) -> [TouchPreset] {
-        guard let s = UserDefaults.standard.string(forKey: key(pad)), let d = s.data(using: .utf8) else { return [] }
+    private static func key(_ pad: Bool, _ driving: Bool) -> String {
+        driving ? "zom.drivingPresets" : (pad ? "zom.padPresets" : "zom.touchPresets")
+    }
+    private static func nameKey(_ pad: Bool, _ driving: Bool) -> String {
+        driving ? "zom.drivingPresetName" : (pad ? "zom.padPresetName" : "zom.touchPresetName")
+    }
+    static func load(pad: Bool, driving: Bool = false) -> [TouchPreset] {
+        guard let s = UserDefaults.standard.string(forKey: key(pad, driving)), let d = s.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([TouchPreset].self, from: d)) ?? []
     }
-    static func save(_ list: [TouchPreset], pad: Bool) {
-        if let d = try? JSONEncoder().encode(list), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: key(pad)) }
+    static func save(_ list: [TouchPreset], pad: Bool, driving: Bool = false) {
+        if let d = try? JSONEncoder().encode(list), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: key(pad, driving)) }
     }
     /// The saved layout the player loaded (or last saved), which the home screen and the editor show. Empty once the layout
     /// has been changed since, so a name is never shown for controls it no longer describes.
-    static func activeName(pad: Bool) -> String { UserDefaults.standard.string(forKey: nameKey(pad)) ?? "" }
-    static func setActiveName(_ name: String, pad: Bool) {
-        if name.isEmpty { UserDefaults.standard.removeObject(forKey: nameKey(pad)) }
-        else { UserDefaults.standard.set(name, forKey: nameKey(pad)) }
+    static func activeName(pad: Bool, driving: Bool = false) -> String { UserDefaults.standard.string(forKey: nameKey(pad, driving)) ?? "" }
+    static func setActiveName(_ name: String, pad: Bool, driving: Bool = false) {
+        if name.isEmpty { UserDefaults.standard.removeObject(forKey: nameKey(pad, driving)) }
+        else { UserDefaults.standard.set(name, forKey: nameKey(pad, driving)) }
     }
 }
 
 enum TouchLayoutStore {
     static let key = "zom.touchLayout"
     static let padKey = "zom.padLayout"      // the virtual gamepad's own layout
+    static let drivingKey = "zom.drivingLayout"
 
-    static func load(pad: Bool = false) -> TouchLayout {
+    static func load(pad: Bool = false, driving: Bool = false) -> TouchLayout {
+        if driving { return loadDriving() }
         if let s = UserDefaults.standard.string(forKey: pad ? padKey : key), let d = s.data(using: .utf8),
            var l = try? JSONDecoder().decode(TouchLayout.self, from: d) {
             l.items.removeAll { $0.kind == .autoattack }       // a test build once had an auto-attack button; the aim stick's Auto mode replaced it
@@ -167,8 +173,18 @@ enum TouchLayoutStore {
         }
         return pad ? padDefaultLayout : defaultLayout
     }
-    static func save(_ l: TouchLayout, pad: Bool = false) {
+    static func save(_ l: TouchLayout, pad: Bool = false, driving: Bool = false) {
+        if driving { saveDriving(l); return }
         if let d = try? JSONEncoder().encode(l), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: pad ? padKey : key) }
+    }
+    /// The layout the overlay swaps to while the player is in a vehicle (see pziOSDrive.lua and toggleDriving in glfw_ios.m).
+    static func loadDriving() -> TouchLayout {
+        if let s = UserDefaults.standard.string(forKey: drivingKey), let d = s.data(using: .utf8),
+           let l = try? JSONDecoder().decode(TouchLayout.self, from: d), !l.items.isEmpty { return l }
+        return drivingDefaultLayout
+    }
+    static func saveDriving(_ l: TouchLayout) {
+        if let d = try? JSONEncoder().encode(l), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: drivingKey) }
     }
     static func reset() { UserDefaults.standard.removeObject(forKey: key) }
 
@@ -210,8 +226,8 @@ enum TouchLayoutStore {
         return l
     }
     private static let panelMenu: [(RadialSlot.Kind, Int, String)] = [
-        (.key, 73, "INV"), (.key, 72, "HP"), (.key, 77, "MAP"), (.key, 70, "LIT"),
-        (.key, 258, "TAB"), (.key, 256, "ESC"), (.keyboard, 0, "KB"), (.hide, 0, "HIDE"),
+        (.key, 73, "INV"), (.key, 77, "MAP"), (.key, 258, "TAB"), (.key, 256, "ESC"),
+        (.keyboard, 0, "KB"), (.hide, 0, "HIDE"), (.drive, 0, "DRIVE"),
     ]
 
     /// The default layout. Sticks in the corners, attack and shove under the right thumb with drag-to-aim, aim that locks
@@ -340,38 +356,38 @@ enum TouchLayoutStore {
         return icons(l)
     }
 
-    /// Driving: the movement stick (which drives the car) and the handful of keys a vehicle needs, with the vehicle and
-    /// panel menus as radials, so a car can be driven and left without switching layouts.
-    static var drivingLayout: TouchLayout {
+    /// The default driving layout: minimal on purpose, because driving needs the stick, the handbrake and a way out, not the
+    /// whole on-foot HUD. The overlay switches to it by itself when you get in a car (if that is on), and the FOOT button or
+    /// the DRIVE option in the radial switches back.
+    static var drivingDefaultLayout: TouchLayout {
         var l = lay([
             ("stick", .stick, "", 0, 108, 344, 152),
-            ("brake", .key, "BRK", 32, 700, 344, 76),        // Space: handbrake
-            ("exit", .key, "EXIT", 69, 700, 244, 62),        // E: enter / exit
-            ("horn", .key, "HORN", 81, 608, 392, 58),
-            ("engine", .key, "ENG", 78, 608, 318, 58),
-            ("lights", .key, "LIT", 70, 608, 244, 58),
-            ("seat", .key, "SEAT", 90, 800, 244, 56),
+            ("brake", .key, "BRK", 32, 720, 344, 78),        // Space: handbrake
+            ("exit", .key, "EXIT", 69, 720, 244, 62),        // E: enter / exit
+            ("foot", .drive, "FOOT", 0, 866, 244, 54),       // back to the on-foot layout
+            ("hide", .hide, "HIDE", 0, 916, 32, 46),
         ])
         l.items.append(radial("vehicle", "VEH", 392, 112, [
             (.key, 86, "VEH"), (.key, 70, "LIGHTS"), (.key, 78, "ENGINE"), (.key, 79, "HEATER"),
             (.key, 85, "INFO"), (.key, 90, "SEAT"), (.key, 81, "HORN"),
         ]))
-        l.items.append(radial("menu", "MENU", 482, 112, [
-            (.key, 73, "INV"), (.key, 77, "MAP"), (.key, 72, "HP"), (.key, 256, "ESC"),
-            (.keyboard, 0, "KB"), (.hide, 0, "HIDE"),
-        ]))
         l = with(l, "brake") { $0.holdLock = true }          // parking brake: tap once, it stays on
-        // Shift + W is cruise control in a car, so the movement stick must not push Run while driving.
+        // Shift + W is cruise control in a car, so the stick must not push Run while driving.
         l = with(l, "stick") { $0.stickPushKey = 0; $0.stickPush2Key = 0 }
+        l = with(l, "foot") { $0.icon = "figure.walk" }
         return icons(l)
     }
 
     /// The layouts the editor offers as starting points, tuned for different ways of holding the device.
     static var builtInPresets: [TouchPreset] {
         [("default", "Default (improved)", defaultLayout), ("claw", "Claw", clawLayout), ("clawv", "Claw V", clawVLayout),
-         ("pro", "Pro", proLayout), ("max", "Max", maxLayout), ("driving", "Driving", drivingLayout),
-         ("minimal", "Minimal", minimalLayout)]
+         ("pro", "Pro", proLayout), ("max", "Max", maxLayout), ("minimal", "Minimal", minimalLayout)]
             .map { TouchPreset(id: "builtin." + $0.0, name: $0.1, layout: $0.2) }
+    }
+
+    /// The one starting point for the driving layout.
+    static var drivingPresets: [TouchPreset] {
+        [TouchPreset(id: "builtin.driving.minimal", name: "Driving (minimal)", layout: drivingDefaultLayout)]
     }
 
     /// The default virtual gamepad (positions worked out for a 956x440 pt screen): sticks at the bottom corners, D-pad and A/B/X/Y between them,
@@ -406,6 +422,7 @@ enum TouchLayoutStore {
     static func ensureSaved() {
         let d = UserDefaults.standard
         if d.string(forKey: padKey) == nil { save(padDefaultLayout, pad: true) }
+        if d.string(forKey: drivingKey) == nil { saveDriving(drivingDefaultLayout) }
         if d.string(forKey: key) == nil { save(defaultLayout); d.set(true, forKey: migratedKey); return }
         guard !d.bool(forKey: migratedKey) else { return }
         var l = load()
@@ -575,6 +592,7 @@ enum ControlIcon {
         case .keyboard: return "keyboard"
         case .hide: return "eye.slash"
         case .radial: return "menucard.fill"
+        case .drive: return "car.fill"
         case .key: return suggested(forKey: item.code)
         default: return nil                                // sticks, scroll, PAD/TCH, fire mode: text or their own look
         }
@@ -586,6 +604,7 @@ enum ControlIcon {
         case .mouse: return slot.code == 1 ? "scope" : "hand.point.up.left.fill"
         case .keyboard: return "keyboard"
         case .hide: return "eye.slash"
+        case .drive: return "car.fill"
         default: return nil
         }
     }
@@ -619,8 +638,26 @@ struct TouchLayoutEditor: View {
     @State private var newName = ""
     @State private var currentPreset = ""        // the saved layout this came from; cleared once a control is changed
     @State private var panelHidden = false       // the empty-canvas preview: the panel steps aside so the whole layout is visible
+    @State private var driving = false           // editing the driving layout instead of the on-foot one
 
     private var selectedIndex: Int? { layout.items.firstIndex { $0.id == selected } }
+
+    /// The driving layout only exists for the touch layout: the virtual gamepad has its own saved layout.
+    private var slotDriving: Bool { driving && !pad }
+    private var builtInsForSlot: [TouchPreset] { slotDriving ? TouchLayoutStore.drivingPresets : TouchLayoutStore.builtInPresets }
+
+    /// Saves the layout being edited, to the place its mode uses.
+    private func persist() { TouchLayoutStore.save(layout, pad: pad, driving: slotDriving) }
+
+    /// Switches between editing the on-foot and the driving layout.
+    private func switchSlot() {
+        saveItem?.cancel()
+        TouchLayoutStore.save(layout, pad: pad, driving: !slotDriving)   // the one we were editing, before the switch
+        layout = TouchLayoutStore.load(pad: pad, driving: slotDriving)
+        presets = TouchPresetStore.load(pad: pad, driving: slotDriving)
+        currentPreset = TouchPresetStore.activeName(pad: pad, driving: slotDriving)
+        selected = nil
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -676,22 +713,22 @@ struct TouchLayoutEditor: View {
         .persistentSystemOverlays(.hidden)
         .onChange(of: layout) { _, l in      // debounced: encoding on every frame of a drag made the editor sluggish
             saveItem?.cancel()
-            let work = DispatchWorkItem { TouchLayoutStore.save(l, pad: pad) }
+            let work = DispatchWorkItem { TouchLayoutStore.save(l, pad: pad, driving: slotDriving) }
             saveItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
             // Changing a control leaves the saved layout behind, so the name only stays while it still describes the layout.
             if !currentPreset.isEmpty,
                let saved = presets.first(where: { $0.name.caseInsensitiveCompare(currentPreset) == .orderedSame })
-                          ?? TouchLayoutStore.builtInPresets.first(where: { $0.name.caseInsensitiveCompare(currentPreset) == .orderedSame }),
+                          ?? builtInsForSlot.first(where: { $0.name.caseInsensitiveCompare(currentPreset) == .orderedSame }),
                saved.layout != l {
                 currentPreset = ""
-                TouchPresetStore.setActiveName("", pad: pad)
+                TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
             }
         }
-        .onDisappear { saveItem?.cancel(); TouchLayoutStore.save(layout, pad: pad) }
+        .onDisappear { saveItem?.cancel(); TouchLayoutStore.save(layout, pad: pad, driving: slotDriving) }
         .onAppear {
-            presets = TouchPresetStore.load(pad: pad)
-            currentPreset = TouchPresetStore.activeName(pad: pad)
+            presets = TouchPresetStore.load(pad: pad, driving: slotDriving)
+            currentPreset = TouchPresetStore.activeName(pad: pad, driving: slotDriving)
             updateGuides()
         }
         .onChange(of: uiMargin) { _, _ in updateGuides() }
@@ -707,9 +744,9 @@ struct TouchLayoutEditor: View {
         guard !n.isEmpty else { return }
         if let i = presets.firstIndex(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) { presets[i].layout = layout }
         else { presets.append(TouchPreset(name: n, layout: layout)) }
-        TouchPresetStore.save(presets, pad: pad)
+        TouchPresetStore.save(presets, pad: pad, driving: slotDriving)
         currentPreset = n
-        TouchPresetStore.setActiveName(n, pad: pad)
+        TouchPresetStore.setActiveName(n, pad: pad, driving: slotDriving)
     }
 
     /// Loads a saved layout, and remembers that it is the one in use.
@@ -717,7 +754,7 @@ struct TouchLayoutEditor: View {
         layout = p.layout
         selected = nil
         currentPreset = p.name
-        TouchPresetStore.setActiveName(p.name, pad: pad)
+        TouchPresetStore.setActiveName(p.name, pad: pad, driving: slotDriving)
     }
 
     // MARK: panel
@@ -831,7 +868,7 @@ struct TouchLayoutEditor: View {
             VStack(alignment: .leading, spacing: M.section) {
                 HStack(spacing: 8) {
                     HStack(spacing: 6) {
-                        Text(pad ? "Virtual Gamepad" : "Touch Controls").font(.system(size: 15, weight: .bold))
+                        Text(pad ? "Virtual Gamepad" : (driving ? "Driving controls" : "Touch Controls")).font(.system(size: 15, weight: .bold))
                         if !currentPreset.isEmpty {
                             Text(currentPreset).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
                                 .lineLimit(1).minimumScaleFactor(0.7)
@@ -857,13 +894,22 @@ struct TouchLayoutEditor: View {
                     addMenu
                     Button {
                         Haptics.tap()
-                        layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout
-                        TouchLayoutStore.save(layout, pad: pad); selected = nil
-                        currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad)
+                        layout = slotDriving ? TouchLayoutStore.drivingDefaultLayout
+                                             : (pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout)
+                        TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); selected = nil
+                        currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
                     } label: { actionPill("Reset", system: "arrow.counterclockwise") }.buttonStyle(PressStyle())
                     if !pad { presetsMenu }
                     savedMenu
                     Button { Haptics.tap(); dismiss() } label: { actionPill("Done", system: "checkmark", filled: true) }.buttonStyle(PressStyle())
+                }
+
+                if !pad {
+                    Picker("", selection: $driving) {
+                        Text("On foot").tag(false); Text("Driving").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: driving) { _, _ in switchSlot() }
                 }
 
                 VStack(alignment: .leading, spacing: M.gap) {
@@ -938,6 +984,7 @@ struct TouchLayoutEditor: View {
                     add(.firemode, label: "MODE", code: 0, size: 44)
                     if let n = layout.items.indices.last { layout.items[n].target = layout.items.first { $0.kind == .mouse && $0.code == 0 }?.id }
                 }
+                Button("Driving toggle") { add(.drive, label: "DRIVE", code: 0, size: 54) }
                 if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
             }
         } label: { actionPill("Add", system: "plus") }
@@ -945,7 +992,7 @@ struct TouchLayoutEditor: View {
 
     private var presetsMenu: some View {
         Menu {
-            ForEach(TouchLayoutStore.builtInPresets) { p in
+            ForEach(builtInsForSlot) { p in
                 Button(p.name) { applyBuiltIn(p) }
             }
             Divider()
@@ -959,8 +1006,8 @@ struct TouchLayoutEditor: View {
         layout = p.layout
         selected = nil
         currentPreset = p.name
-        TouchLayoutStore.save(layout, pad: pad)
-        TouchPresetStore.setActiveName(p.name, pad: pad)
+        TouchLayoutStore.save(layout, pad: pad, driving: slotDriving)
+        TouchPresetStore.setActiveName(p.name, pad: pad, driving: slotDriving)
     }
 
     private var savedMenu: some View {
@@ -972,15 +1019,15 @@ struct TouchLayoutEditor: View {
                     Button { load(p) } label: { Label("Load", systemImage: "arrow.down.doc") }
                     Button {
                         if let n = presets.firstIndex(where: { $0.id == p.id }) {
-                            presets[n].layout = layout; TouchPresetStore.save(presets, pad: pad)
-                            currentPreset = p.name; TouchPresetStore.setActiveName(p.name, pad: pad)
+                            presets[n].layout = layout; TouchPresetStore.save(presets, pad: pad, driving: slotDriving)
+                            currentPreset = p.name; TouchPresetStore.setActiveName(p.name, pad: pad, driving: slotDriving)
                         }
                     } label: { Label("Replace with current", systemImage: "square.and.arrow.down") }
                     Button(role: .destructive) {
                         presets.removeAll { $0.id == p.id }
-                        TouchPresetStore.save(presets, pad: pad)
+                        TouchPresetStore.save(presets, pad: pad, driving: slotDriving)
                         if currentPreset.caseInsensitiveCompare(p.name) == .orderedSame {
-                            currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad)
+                            currentPreset = ""; TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
                         }
                     } label: { Label("Delete", systemImage: "trash") }
                 }
@@ -1118,6 +1165,18 @@ struct TouchLayoutEditor: View {
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
+            if item.kind == .drive {
+                row("Label") {
+                    TextField("Label", text: Binding(get: { layout.items[i].label }, set: { layout.items[i].label = String($0.prefix(5)).uppercased() }))
+                        .multilineTextAlignment(.center)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .frame(width: 90, height: M.control)
+                        .background(Color.white.opacity(0.12), in: Capsule())
+                }
+                Text("Each tap switches between the on-foot layout and the driving one. With \"Switch in a vehicle\" on, the game's vehicle state does it for you (pziOSDrive.lua writes the marker the overlay watches).")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+            }
             if item.kind == .radial { radialEditor(i) }
             row("Size", value: String(format: "%.0f", item.size)) {
                 Slider(value: Binding(get: { layout.items[i].size }, set: { layout.items[i].size = $0 }),
@@ -1191,6 +1250,7 @@ struct TouchLayoutEditor: View {
         case .scroll: return "Scroll strip"
         case .radial: return item.label.isEmpty ? "Radial menu" : "Radial menu (\(item.label))"
         case .firemode: return "Fire mode toggle"
+        case .drive: return "Driving toggle"
         case .padstick: return item.code == 0 ? "Left stick" : "Right stick"
         default: return item.label.isEmpty ? "Control" : item.label
         }
@@ -1252,7 +1312,7 @@ struct TouchLayoutEditor: View {
     }
 
     @ViewBuilder private func slotMenu(_ i: Int, _ n: Int, _ sl: RadialSlot) -> some View {
-        let copyable = layout.items.filter { [.key, .mouse, .keyboard, .hide, .mode, .firemode].contains($0.kind) }
+        let copyable = layout.items.filter { [.key, .mouse, .keyboard, .hide, .mode, .firemode, .drive].contains($0.kind) }
         Menu {
             if !copyable.isEmpty {
                 Menu("Copy from button") {
@@ -1275,6 +1335,7 @@ struct TouchLayoutEditor: View {
                 Button("Hide / show controls") { editSlot(i, n) { $0.kind = .hide; $0.target = nil; $0.label = "HIDE"; $0.icon = "eye.slash" } }
                 Button("PAD / TCH mode") { editSlot(i, n) { $0.kind = .mode; $0.target = nil; $0.label = "PAD"; $0.icon = nil } }
                 Button("Keyboard") { editSlot(i, n) { $0.kind = .keyboard; $0.target = nil; $0.label = "KB"; $0.icon = "keyboard" } }
+                Button("Driving toggle") { editSlot(i, n) { $0.kind = .drive; $0.target = nil; $0.label = "DRIVE"; $0.icon = "car.fill" } }
                 Menu("Fire mode toggle for") {
                     ForEach(layout.items.filter { $0.kind == .key || $0.kind == .mouse }) { b in
                         Button(buttonName(b)) { editSlot(i, n) { $0.kind = .firemode; $0.target = b.id; $0.label = "MODE"; $0.icon = nil } }
@@ -1323,6 +1384,7 @@ struct TouchLayoutEditor: View {
         case .keyboard: return RadialSlot(id: id, kind: .keyboard, label: b.label.isEmpty ? "KB" : b.label, icon: "keyboard")
         case .hide: return RadialSlot(id: id, kind: .hide, label: "HIDE", icon: "eye.slash")
         case .mode: return RadialSlot(id: id, kind: .mode, label: "PAD")
+        case .drive: return RadialSlot(id: id, kind: .drive, label: "DRIVE", icon: "car.fill")
         case .firemode: return RadialSlot(id: id, kind: .firemode, label: "MODE", target: b.target)
         default: return RadialSlot(id: id)
         }
@@ -1335,6 +1397,7 @@ struct TouchLayoutEditor: View {
         case .hide: return "Hide / show"
         case .mode: return "PAD / TCH"
         case .keyboard: return "Keyboard"
+        case .drive: return "Drive / on foot"
         case .firemode: return "Fire mode: " + (layout.items.first { $0.id == sl.target }.map(buttonName) ?? "?")
         }
     }
@@ -1345,6 +1408,7 @@ struct TouchLayoutEditor: View {
         case .keyboard: return "Keyboard toggle"
         case .hide: return "HIDE"
         case .mode: return "PAD / TCH"
+        case .drive: return "Driving toggle"
         case .firemode: return "Fire mode toggle (\(layout.items.first { $0.id == b.target }.map(buttonName) ?? "?"))"
         default: return b.label
         }

@@ -743,6 +743,7 @@ struct SettingsView: View {
     @AppStorage("zom.padStyle") private var padStyle = 0                  // virtual gamepad labels: 0 Xbox, 1 PlayStation
     @AppStorage("zom.virtualPad") private var virtualPad = false          // on-screen controls act as a game controller instead of keyboard and mouse
     @AppStorage("zom.touchIcons") private var touchIcons = true            // SF Symbols on the on-screen controls instead of text
+    @AppStorage("zom.drivingAuto") private var drivingAuto = true          // switch to the driving layout while in a vehicle
     @AppStorage("zom.ramDonorHeap") private var ramDonorHeap = false      // experimental: Java heap in memory held by the donor extension
     @AppStorage("zom.twoFingerZoom") private var twoFingerZoom = true       // two-finger scroll on empty screen (the game's zoom)
     @AppStorage("zom.zinkBackend") private var zinkBackend = false      // experimental: run the game on Mesa Zink + MoltenVK (OpenGL 4.5)
@@ -892,6 +893,9 @@ struct SettingsView: View {
                 Row(id: "icons", title: "Icons on Controls", kind: .toggle($touchIcons),
                     detail: touchIcons ? "On: Each on-screen control draws an icon instead of its text, where it has one (the PAD/TCH button and the fire-mode toggle keep their words, because that text is their state). Applies on the next start."
                                        : "Off: Every control shows its text label. Applies on the next start."),
+                Row(id: "driveauto", title: "Switch in a Vehicle", kind: .toggle($drivingAuto),
+                    detail: drivingAuto ? "On: The touch layout switches to the driving layout by itself when you get into a vehicle, and back when you get out. The game's Lua writes a small marker for it (pziOSDrive.lua); a DRIVE button or radial option still switches by hand. Applies on the next start."
+                                        : "Off: The layouts never switch by themselves. Add a DRIVE toggle to a touch layout (or use the one in its radial menu) to switch by hand. Applies on the next start."),
             ] + (virtualPad ? [
                 Row(id: "padstyle", title: "Gamepad Buttons", kind: .choice(["Xbox", "PlayStation"], Binding(get: { padStyle }, set: { padStyle = $0; PadCatalog.setStyle($0) })),
                     detail: padStyle == 1 ? "PlayStation: Buttons are labelled like a DualSense (✕ ○ □ △, L1/R1, L2/R2, Create, Options). They send the same input as the Xbox names."

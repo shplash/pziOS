@@ -319,6 +319,9 @@ static NSString *default_icon_for_key(int code) {
 @property (nonatomic, strong) CAShapeLayer *cursorLayer;
 @property (nonatomic, strong) ZOButton *modeButton;
 @property (nonatomic) BOOL mouseActive;              // a physical mouse is connected: it drives the cursor, touch no longer moves it
+@property (nonatomic) BOOL drivingActive;                // the driving layout is on screen instead of the on-foot one
+@property (nonatomic) NSInteger lastVehicleState;         // 0 on foot, 1 in a vehicle, -1 not read yet
+@property (nonatomic, strong) NSTimer *drivePoll;
 - (void)mouseDelta:(CGPoint)d;
 - (void)moveCursorTo:(CGPoint)p;
 - (void)setMouseConnected:(BOOL)on;
@@ -333,7 +336,12 @@ static NSString *default_icon_for_key(int code) {
 - (void)updateCursorVisibility;
 - (void)setPadConnected:(BOOL)on;
 - (void)installControls;
-- (BOOL)installSavedLayout;
+- (BOOL)installSavedLayoutJSON:(NSString *)json;
+- (void)installDefaultControls;
+- (void)applyLayoutDriving:(BOOL)driving;
+- (void)toggleDriving;
+- (void)startDrivePoll;
+- (void)pollVehicle;
 @end
 
 @implementation ZOButton
@@ -382,6 +390,7 @@ static NSString *default_icon_for_key(int code) {
     else if (d && self.kind == 3) [gv toggleControls];
     else if (d && self.kind == 4) [gv toggleMode];
     else if (d && self.kind == 7) [gv cycleFireModeFrom:self];
+    else if (d && self.kind == 8) [gv toggleDriving];
     if (d && self.kind == 0 && self.code == 256) [gv releaseLatches];     // ESC (menus, pause) lets go of any locked button
 }
 - (void)releaseLatch {
@@ -729,6 +738,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     else if ([k isEqualToString:@"mode"]) [gv toggleMode];
     else if ([k isEqualToString:@"keyboard"]) [gv toggleKeyboard];
     else if ([k isEqualToString:@"firemode"]) [gv cycleFireModeForTarget:s.target];
+    else if ([k isEqualToString:@"drive"]) [gv toggleDriving];
     if (input_log_enabled()) glfwi_log("radial: sent %s (%d)", k.UTF8String, s.code);
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
@@ -1215,12 +1225,9 @@ static void fps_note_frame(void) {
 - (void)pressesCancelled:(NSSet<UIPress *> *)p withEvent:(UIPressesEvent *)e { [self press:p action:GLFW_RELEASE]; }
 
 // ---- layout of the overlay
-// Builds the controls from the layout saved by the launcher's touch editor (UserDefaults "zom.touchLayout", JSON). NO = none saved.
-- (BOOL)installSavedLayout {
-    // Virtual gamepad on: the gamepad layout drives the synthetic pad; keyboard/mouse layouts stay untouched for when it is off.
-    BOOL padMode = vpad_active();
-    NSString *json = [NSUserDefaults.standardUserDefaults stringForKey:(padMode ? @"zom.padLayout" : @"zom.touchLayout")];
-    if (!json.length && padMode) json = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"];
+// Builds the controls from one stored layout (the JSON the touch editor saves). NO = there was nothing to build.
+- (BOOL)installSavedLayoutJSON:(NSString *)json {
+    if (!json.length) return NO;
     NSDictionary *lay = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
     NSArray *items = [lay isKindOfClass:NSDictionary.class] ? lay[@"items"] : nil;
     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
@@ -1292,7 +1299,7 @@ static void fps_note_frame(void) {
             pb.norm = norm; pb.alpha = alpha; pb.tag = tag++;
             [self addSubview:pb]; [self.controls addObject:pb]; continue;
         }
-        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 7 : -1;
+        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 7 : [kind isEqualToString:@"drive"] ? 8 : -1;
         if (k < 0) continue;
         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
         b.itemId = [it[@"id"] isKindOfClass:NSString.class] ? it[@"id"] : nil;
@@ -1321,8 +1328,87 @@ static void fps_note_frame(void) {
     glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
     return YES;
 }
-// The two-finger scroll (mouse wheel) and two-finger tap (right click) only count fingers on empty screen. A finger on the joystick or on an action
-// button must not count, or holding the stick with one thumb and a button with the other reads as a zoom gesture.
+// The vehicle marker the game's Lua writes (see pziOSDrive.lua). The game's own file API writes into one of these places
+// depending on the version, so all of the likely ones are checked; no marker simply means no automatic switching.
+static NSString *vehicle_state_file(void) {
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count == 0) return nil;
+    NSString *base = docs.firstObject;
+    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt", @"pzios_vehicle.txt"]) {
+        NSString *s = [NSString stringWithContentsOfFile:[base stringByAppendingPathComponent:rel] encoding:NSUTF8StringEncoding error:nil];
+        s = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (s.length) return s;
+    }
+    return nil;
+}
+
+/// The layout stored for the current mode: the gamepad layout when the virtual gamepad is on (it has no driving variant),
+/// otherwise the on-foot or driving touch layout.
+- (NSString *)layoutJSONDriving:(BOOL)driving {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (vpad_active()) return [d stringForKey:@"zom.padLayout"] ?: [d stringForKey:@"zom.touchLayout"];
+    return [d stringForKey:(driving ? @"zom.drivingLayout" : @"zom.touchLayout")];
+}
+- (void)removeControlViews {
+    for (UIView *v in self.controls) [v removeFromSuperview];
+    [self.controls removeAllObjects];
+    [self.hideButton removeFromSuperview]; self.hideButton = nil;
+    [self.modeButton removeFromSuperview]; self.modeButton = nil;
+}
+/// Puts the on-foot or the driving layout on screen. Used at start-up, by the driving button (or a radial option that holds
+/// it) and by the automatic switch when a vehicle marker appears.
+- (void)applyLayoutDriving:(BOOL)driving {
+    BOOL padMode = vpad_active();
+    self.drivingActive = driving && !padMode;
+    [self removeControlViews];
+    if (![self installSavedLayoutJSON:[self layoutJSONDriving:self.drivingActive]]) [self installDefaultControls];
+    _padConnected = pad_any_connected();
+    [self updateControlVisibility];
+    [self setNeedsLayout];
+}
+- (void)toggleDriving {
+    if (vpad_active()) return;                       // the gamepad layout drives the pad; there is nothing to switch to
+    [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+    [self applyLayoutDriving:!self.drivingActive];
+    glfwi_log("layout: %s", self.drivingActive ? "driving" : "on foot");
+}
+- (void)startDrivePoll {
+    if (self.drivePoll || vpad_active()) return;
+    self.lastVehicleState = -1;                      // read the marker once, then only react to changes
+    __weak GLFWiOSView *ws = self;
+    self.drivePoll = [NSTimer scheduledTimerWithTimeInterval:0.6 repeats:YES block:^(NSTimer *t) { [ws pollVehicle]; }];
+}
+- (void)pollVehicle {
+    id autoPref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.drivingAuto"];
+    if (autoPref && ![autoPref boolValue]) return;
+    NSString *s = vehicle_state_file();
+    if (s.length == 0) return;
+    NSInteger state = s.integerValue != 0 ? 1 : 0;
+    // Only a *change* switches layouts, so pressing DRIVE or FOOT by hand is respected until you next get in or out of a
+    // vehicle instead of being undone by the next poll.
+    if (state == self.lastVehicleState) return;
+    self.lastVehicleState = state;
+    glfwi_log("vehicle: %s, switching to the %s layout", state ? "in a car" : "on foot", state ? "driving" : "on-foot");
+    [self applyLayoutDriving:state == 1];
+}
+// The built-in controls, used when no layout has been saved yet.
+- (void)installDefaultControls {
+    ZOJoystick *js = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, 130, 130)]; js.tag = 1; [self addSubview:js]; [self.controls addObject:js];
+    struct { const char *t; int kind, code; int tag; } defs[] = {
+        {"ATK", 1, 0, 10}, {"AIM", 1, 1, 11}, {"E", 0, 69, 12}, {"RUN", 0, 340, 13}, {"SPC", 0, 32, 14},
+        {"CTRL", 0, 341, 15}, {"TAB", 0, 258, 16}, {"ESC", 0, 256, 17}, {"KB", 2, 0, 18},
+    };
+    for (size_t i = 0; i < sizeof defs / sizeof defs[0]; i++) {
+        BOOL small = defs[i].tag >= 16;
+        ZOButton *b = [ZOButton buttonWithTitle:[NSString stringWithUTF8String:defs[i].t] kind:defs[i].kind code:defs[i].code size:small ? 44 : 62];
+        b.iconName = default_icon_for_key(defs[i].code); [b refreshIcon];
+        b.tag = defs[i].tag; [self addSubview:b]; [self.controls addObject:b];
+    }
+    self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44];
+    self.hideButton.iconName = @"eye.slash"; [self.hideButton refreshIcon];
+    self.hideButton.tag = 19; [self addSubview:self.hideButton];
+    self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton];
+}
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     for (UIView *v = touch.view; v && v != self; v = v.superview)
         if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOVPadStick.class] || [v isKindOfClass:ZOScrollStrip.class] || [v isKindOfClass:ZORadial.class]) return NO;
@@ -1368,24 +1454,8 @@ static void fps_note_frame(void) {
         g_fpsLabel = l;
         glfwi_log("fps counter: drawing the frame rate in the top-left corner");
     }
-    if ([self installSavedLayout]) { _padConnected = pad_any_connected(); [self updateControlVisibility]; [self setNeedsLayout]; return; }
-    ZOJoystick *js = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, 130, 130)]; js.tag = 1; [self addSubview:js]; [self.controls addObject:js];
-    struct { const char *t; int kind, code; int tag; } defs[] = {
-        {"ATK", 1, 0, 10}, {"AIM", 1, 1, 11}, {"E", 0, 69, 12}, {"RUN", 0, 340, 13}, {"SPC", 0, 32, 14},
-        {"CTRL", 0, 341, 15}, {"TAB", 0, 258, 16}, {"ESC", 0, 256, 17}, {"KB", 2, 0, 18},
-    };
-    for (size_t i = 0; i < sizeof defs / sizeof defs[0]; i++) {
-        BOOL small = defs[i].tag >= 16;
-        ZOButton *b = [ZOButton buttonWithTitle:[NSString stringWithUTF8String:defs[i].t] kind:defs[i].kind code:defs[i].code size:small ? 44 : 62];
-        b.iconName = default_icon_for_key(defs[i].code); [b refreshIcon];
-        b.tag = defs[i].tag; [self addSubview:b]; [self.controls addObject:b];
-    }
-    self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44];
-    self.hideButton.iconName = @"eye.slash"; [self.hideButton refreshIcon];
-    self.hideButton.tag = 19; [self addSubview:self.hideButton];
-    self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton];
-    _padConnected = pad_any_connected(); [self updateControlVisibility];
-    [self setNeedsLayout];
+    [self applyLayoutDriving:NO];
+    [self startDrivePoll];
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
