@@ -750,6 +750,7 @@ struct SettingsView: View {
     @AppStorage("zom.virtualPad") private var virtualPad = false          // on-screen controls act as a game controller instead of keyboard and mouse
     @AppStorage("zom.touchIcons") private var touchIcons = true            // SF Symbols on the on-screen controls instead of text
     @AppStorage("zom.drivingAuto") private var drivingAuto = true          // switch to the driving layout while in a vehicle
+    @AppStorage("zom.analogMovement") private var analogMovement = false   // movement sticks drive a virtual controller's left stick instead of WASD
     @AppStorage("zom.ramDonorHeap") private var ramDonorHeap = false      // experimental: Java heap in memory held by the donor extension
     @AppStorage("zom.twoFingerZoom") private var twoFingerZoom = true       // two-finger scroll on empty screen (the game's zoom)
     @AppStorage("zom.zinkBackend") private var zinkBackend = false      // experimental: run the game on Mesa Zink + MoltenVK (OpenGL 4.5)
@@ -915,6 +916,10 @@ struct SettingsView: View {
                     detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
                                        : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own. Presets (Default, Claw, Claw V, Pro, Max, Minimal) are a quick start, and the editor shows the safe area and the game's UI margins so controls land exactly where you put them."),
             ] + (virtualPad ? [] : [
+                Row(id: "stickengine", title: "Movement Engine", kind: .choice(["Keys", "Analog"], Binding(get: { analogMovement ? 1 : 0 },
+                        set: { v in analogMovement = v == 1; TouchLayoutStore.setStickEngine(v == 1 ? "pad" : nil) })), group: "Layout",
+                    detail: analogMovement ? "Analog: the movement stick drives a virtual controller's left stick, so walking is 360° and the speed follows how far you push it. Project Zomboid sees a controller for movement, so it may show controller prompts; buttons and aiming stay touch. Also set per stick in the layout editor."
+                                         : "Keys: the movement stick sends W/A/S/D (or the arrow keys), which is the game's own keyboard movement: eight directions at walking speed, with Run and Sprint marks push you can set. Switch to Analog for a 360° stick with a speed that follows the push. Also set per stick in the layout editor."),
                 Row(id: "drivingedit", title: "Edit driving layout", kind: .action(destructive: false) { editor = .driving }, group: "Layout",
                     detail: "The layout the game switches to in a vehicle: steering arrows, gas, brake, a handbrake that latches and Shift+W/Shift+S cruise control. Also reachable from the On foot / Driving switch in the editor."),
             ]) + [

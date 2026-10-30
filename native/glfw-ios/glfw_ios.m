@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define GLFW_API __attribute__((visibility("default"), used))
 
@@ -222,6 +223,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
 // slot would be shadowed, and the overlay must not treat the pad it is drawing as an external controller.
 #define VPAD_SLOT 0                            // joystick slot 0 while the virtual pad is on: games that only look at the first pad find it
 static int g_vpadOn = -1;
+static BOOL g_vpadNeeded;                      // a movement stick asked for the analog engine, so the game needs to see the pad
 static unsigned char g_vpadButtons[15];
 static float g_vpadAxes[6];                    // LX, LY, RX, RY, LT, RT (triggers rest at -1, as in GLFW)
 static void vpad_init(void) {
@@ -230,7 +232,18 @@ static void vpad_init(void) {
     for (int i = 0; i < 6; i++) g_vpadAxes[i] = i >= 4 ? -1.0f : 0.0f;
     if (g_vpadOn) glfwi_log("virtual gamepad: the on-screen controls drive joystick slot %d", VPAD_SLOT);
 }
+/// The Virtual Gamepad setting, which also selects the gamepad layout.
 static int vpad_active(void) { vpad_init(); return g_vpadOn; }
+/// A movement stick on the analog engine needs the game to see a pad too. The touch editor writes this pref whenever a
+/// layout is saved, so it is already right by the time the game starts polling controllers.
+static BOOL vpad_sticks_pref(void) {
+    static int v = -1;
+    if (v < 0) v = [NSUserDefaults.standardUserDefaults boolForKey:@"zom.analogMovement"] ? 1 : 0;
+    return v == 1;
+}
+/// Whether a virtual pad exists at all, for the game and for GLFW's joystick API: the whole gamepad mode, or just the
+/// left stick an analog movement stick drives.
+static int vpad_present(void) { vpad_init(); return (g_vpadOn || g_vpadNeeded || vpad_sticks_pref()) ? 1 : 0; }
 static void vpad_set_button(int i, BOOL down) { if (i >= 0 && i < 15) g_vpadButtons[i] = down ? 1 : 0; }
 static void vpad_set_trigger(int i, BOOL down) { if (i >= 0 && i < 2) g_vpadAxes[4 + i] = down ? 1.0f : -1.0f; }
 static void vpad_set_stick(int stick, float x, float y) {
@@ -241,6 +254,12 @@ static void vpad_set_stick(int stick, float x, float y) {
     float k = (m - dz) / (1.0f - dz) / m;
     g_vpadAxes[i] = MAX(-1.0f, MIN(1.0f, x * k));
     g_vpadAxes[i + 1] = MAX(-1.0f, MIN(1.0f, y * k));
+}
+/// Writes the left stick exactly as given (the analog movement stick removes its own dead zone), in GLFW's order: x
+/// right, y down.
+static void vpad_set_stick_raw(float x, float y) {
+    g_vpadAxes[0] = MAX(-1.0f, MIN(1.0f, x));
+    g_vpadAxes[1] = MAX(-1.0f, MIN(1.0f, y));
 }
 
 // Icons for the on-screen controls. The touch editor writes an "icon" name (an SF Symbol) for each control and each
@@ -822,6 +841,11 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 @property (nonatomic) CGFloat push2At;           // 0.5...1.5
 @property (nonatomic) int keyUp, keyLeft, keyDown, keyRight;
 @property (nonatomic) BOOL pushing, pushing2;
+@property (nonatomic) BOOL padStick;                // analog engine: send the vector to the virtual controller's left stick instead of WASD
+@property (nonatomic) BOOL tracking;                // a thumb is on the stick
+@property (nonatomic) CGPoint origin;               // where that thumb landed: the stick floats under it
+@property (nonatomic) int sector;                   // the latched 8-way direction, -1 = none
+@property (nonatomic, strong) CAShapeLayer *originRing;
 - (void)updateRings;
 @end
 @implementation ZOJoystick
@@ -839,12 +863,25 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.deadZone = 0.18; self.pushKey = 340; self.pushAt = 0.85;      // run from 85%...
         self.pushKey2 = 342; self.push2At = 1.15;                          // ...and sprint once pushed past the rim
         self.keyUp = 87; self.keyLeft = 65; self.keyDown = 83; self.keyRight = 68;
+        self.sector = -1; self.origin = CGPointMake(f.size.width / 2, f.size.height / 2);
+        // A small dashed ring marks where the thumb landed: the stick is floating, so that spot is its centre until it
+        // is let go.
+        self.originRing = [CAShapeLayer layer];
+        self.originRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-15, -15, 30, 30)].CGPath;
+        self.originRing.fillColor = nil;
+        self.originRing.strokeColor = [UIColor colorWithWhite:1 alpha:0.4].CGColor;
+        self.originRing.lineWidth = 1.5;
+        self.originRing.lineDashPattern = @[@3, @3];
+        self.originRing.position = self.origin;
+        self.originRing.hidden = YES;
+        [self.layer addSublayer:self.originRing];
         [self updateRings];
     }
     return self;
 }
 /// Rings on the stick itself: where the dead zone ends, where Run starts and where Sprint starts (that one sits outside
-/// the rim, which is where the stick has to be dragged to reach it).
+/// the rim, which is where the stick has to be dragged to reach it). Their paths are built around the origin so the rings
+/// can follow the thumb's base (see update:).
 - (void)updateRings {
     CGFloat size = self.bounds.size.width;
     CGPoint c = CGPointMake(size / 2, size / 2);
@@ -868,35 +905,75 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGFloat dz = MAX(0.05, MIN(0.60, self.deadZone));
     CGFloat p1 = MAX(0.3, MIN(1.5, self.pushAt));
     CGFloat p2 = MAX(0.5, MIN(1.5, self.push2At));
-    self.deadRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - size * dz / 2, c.y - size * dz / 2, size * dz, size * dz)].CGPath;
-    self.pushRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - size * p1 / 2, c.y - size * p1 / 2, size * p1, size * p1)].CGPath;
+    self.deadRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * dz / 2, -size * dz / 2, size * dz, size * dz)].CGPath;
+    self.pushRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * p1 / 2, -size * p1 / 2, size * p1, size * p1)].CGPath;
     self.push2Ring.hidden = (self.pushKey2 == 0 || self.pushKey2 == self.pushKey || p2 <= p1 + 0.05);
-    self.push2Ring.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(c.x - size * p2 / 2, c.y - size * p2 / 2, size * p2, size * p2)].CGPath;
+    self.push2Ring.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * p2 / 2, -size * p2 / 2, size * p2, size * p2)].CGPath;
+    if (!self.tracking) {
+        self.deadRing.position = c; self.pushRing.position = c; self.push2Ring.position = c;
+    }
 }
 - (void)set:(BOOL)v key:(int)key flag:(BOOL *)f { if (*f != v) { *f = v; push_key(key, v ? GLFW_PRESS : GLFW_RELEASE); } }
+- (void)setUp:(BOOL)up right:(BOOL)right down:(BOOL)down left:(BOOL)left {
+    [self set:up key:self.keyUp flag:&_up];
+    [self set:right key:self.keyRight flag:&_right];
+    [self set:down key:self.keyDown flag:&_down];
+    [self set:left key:self.keyLeft flag:&_left];
+}
 - (void)update:(UITouch *)t {
-    CGFloat r = self.bounds.size.width / 2; CGPoint c = CGPointMake(r, r), p = [t locationInView:self];
-    CGFloat dx = p.x - c.x, dy = p.y - c.y, len = hypot(dx, dy);
+    CGFloat r = self.bounds.size.width / 2;
+    // The base floats: it is where the thumb went down, and the travel is measured from there (see touchesBegan).
+    CGPoint o = self.tracking ? self.origin : CGPointMake(r, r);
+    CGPoint p = [t locationInView:self];
+    CGFloat dx = p.x - o.x, dy = p.y - o.y, len = hypot(dx, dy);
     CGFloat mag = r > 0 ? len / r : 0;                                       // keeps counting past the rim, up to ~1.5+
     CGFloat vis = (len > r && len > 0) ? r / len : 1;                        // the thumb itself stays on the rim
-    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(c.x + dx * vis, c.y + dy * vis); [CATransaction commit];
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    self.thumb.position = CGPointMake(o.x + dx * vis, o.y + dy * vis);
+    self.originRing.position = o;
+    self.deadRing.position = o; self.pushRing.position = o; self.push2Ring.position = o;
+    [CATransaction commit];
 
     CGFloat dz = MAX(0.02, MIN(0.60, self.deadZone));
     CGFloat travel = mag <= dz ? 0 : MIN(1.5, (mag - dz) / MAX(0.0001, 1 - dz));   // 1.5 = dragged well past the rim
     CGFloat ux = len > 0 ? dx / len : 0, uy = len > 0 ? dy / len : 0;              // unit direction
-    CGFloat ax = ux * travel, ay = uy * travel;
 
-    // Hysteresis: a direction engages at 0.18 of the travel and releases only below 0.12, so the stick starts moving with a
-    // light push but a thumb resting near the middle cannot make you drift.
-    CGFloat on = 0.18, off = 0.12;
-    [self set:ay < -(self.up ? off : on) key:self.keyUp flag:&_up];
-    [self set:ay > (self.down ? off : on) key:self.keyDown flag:&_down];
-    [self set:ax < -(self.left ? off : on) key:self.keyLeft flag:&_left];
-    [self set:ax > (self.right ? off : on) key:self.keyRight flag:&_right];
+    // One latched direction for all four keys: a thumb resting on a diagonal boundary would otherwise flicker between one
+    // key and two. The sector only changes once the thumb is a few degrees past that boundary, and is dropped only when
+    // the thumb comes back to the middle.
+    BOOL engaged = travel >= ((self.up || self.down || self.left || self.right) ? 0.12 : 0.18);
+    if (!engaged) {
+        self.sector = -1;
+    } else {
+        double a = atan2(dy, dx) * 180.0 / M_PI;          // 0 = right, 90 = down (a screen's +y points down)
+        if (self.sector < 0) self.sector = (int)llround(a / 45.0);
+        double units = a / 45.0, d = units - self.sector;
+        if (d > 4) units -= 8;                            // the -180/+180 seam must not send it round the houses
+        if (d < -4) units += 8;
+        double h = 0.14;                                  // ~6 degrees of stickiness at a boundary
+        while (units - self.sector > 0.5 + h) self.sector++;
+        while (units - self.sector < -0.5 - h) self.sector--;
+    }
 
-    // First stage: Run (or Sprint, or any key) from pushAt on. Second stage: another key once pushed past the rim.
+    if (self.sector < 0) {
+        [self setUp:NO right:NO down:NO left:NO];
+        if (self.padStick) vpad_set_stick_raw(0, 0);
+    } else if (self.padStick) {
+        // Analog engine: the game gets a controller's left stick, with a speed that follows how far it is pushed. No
+        // keyboard keys at all, so Project Zomboid cannot see the two devices fighting each other.
+        [self setUp:NO right:NO down:NO left:NO];
+        float m = (float)MIN(1.0, travel);
+        vpad_set_stick_raw((float)ux * m, (float)uy * m);
+    } else {
+        int sec = ((self.sector % 8) + 8) % 8;             // 0 right, 2 down, 4 left, 6 up
+        [self setUp:(sec >= 5) right:(sec == 7 || sec == 0 || sec == 1)
+               down:(sec >= 1 && sec <= 3) left:(sec >= 3 && sec <= 5)];
+    }
+
+    // First stage: Run (or Sprint, or any key) from pushAt on. Second stage: another key once pushed past the rim. The
+    // analog engine leaves running to the game's own controller scheme, where speed already follows the stick.
     CGFloat at = MAX(0.3, MIN(1.5, self.pushAt));
-    if (self.pushKey != 0) {
+    if (self.pushKey != 0 && !self.padStick) {
         BOOL want = travel >= (self.pushing ? at - 0.12 : at);
         if (want != self.pushing) {
             self.pushing = want;
@@ -905,7 +982,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         }
     }
     CGFloat at2 = MAX(0.5, MIN(1.5, self.push2At));
-    if (self.pushKey2 != 0 && self.pushKey2 != self.pushKey && at2 > at + 0.05) {
+    if (self.pushKey2 != 0 && self.pushKey2 != self.pushKey && at2 > at + 0.05 && !self.padStick) {
         BOOL want2 = travel >= (self.pushing2 ? at2 - 0.12 : at2);
         if (want2 != self.pushing2) {
             self.pushing2 = want2;
@@ -916,22 +993,36 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     self.thumb.fillColor = (self.pushing2 ? [UIColor colorWithRed:1 green:0.58 blue:0.35 alpha:0.8]
                            : self.pushing ? [UIColor colorWithRed:1 green:0.85 blue:0.45 alpha:0.75]
+                           : self.padStick ? [UIColor colorWithRed:0.55 green:0.8 blue:1 alpha:0.75]
                            : [UIColor colorWithWhite:1 alpha:0.55]).CGColor;
     [CATransaction commit];
 }
 - (void)reset {
-    [self set:NO key:self.keyUp flag:&_up]; [self set:NO key:self.keyLeft flag:&_left];
-    [self set:NO key:self.keyDown flag:&_down]; [self set:NO key:self.keyRight flag:&_right];
+    [self setUp:NO right:NO down:NO left:NO];
     if (self.pushing) { self.pushing = NO; if (self.pushKey) push_key(self.pushKey, GLFW_RELEASE); }
     if (self.pushing2) { self.pushing2 = NO; if (self.pushKey2) push_key(self.pushKey2, GLFW_RELEASE); }
+    if (self.padStick) vpad_set_stick_raw(0, 0);
+    self.tracking = NO; self.sector = -1;
     CGFloat r = self.bounds.size.width / 2;
+    self.origin = CGPointMake(r, r);
+    self.originRing.hidden = YES;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     self.thumb.position = CGPointMake(r, r);
+    self.deadRing.position = self.origin; self.pushRing.position = self.origin; self.push2Ring.position = self.origin;
     self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
     [CATransaction commit];
 }
-- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self update:ts.anyObject]; }
-- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self update:ts.anyObject]; }
+- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    UITouch *t = ts.anyObject; if (!t) return;
+    CGFloat r = self.bounds.size.width / 2;
+    CGPoint c = CGPointMake(r, r), p = [t locationInView:self];
+    CGFloat dx = p.x - c.x, dy = p.y - c.y, len = hypot(dx, dy), keep = r * 0.9;
+    if (len > keep && len > 0) p = CGPointMake(c.x + dx / len * keep, c.y + dy / len * keep);   // start just inside the rim
+    self.origin = p; self.sector = -1; self.tracking = YES;
+    self.originRing.hidden = NO;
+    [self update:t];
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { UITouch *t = ts.anyObject; if (t) [self update:t]; }
 - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self reset]; }
 - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self reset]; }
 @end
@@ -1309,6 +1400,13 @@ static void fps_note_frame(void) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
             id dz = it[@"stickDead"], pk = it[@"stickPushKey"], pa = it[@"stickPushAt"], ks = it[@"stickArrows"];
             id pk2 = it[@"stickPush2Key"], pa2 = it[@"stickPush2At"];
+            // "pad" = the analog engine: the stick drives the virtual controller's left stick instead of WASD.
+            j.padStick = [it[@"stickEngine"] isKindOfClass:NSString.class] && [it[@"stickEngine"] isEqualToString:@"pad"];
+            if (j.padStick) {
+                g_vpadNeeded = YES;
+                static BOOL loggedAnalog;
+                if (!loggedAnalog) { loggedAnalog = YES; glfwi_log("movement stick: analog engine (the game gets a virtual controller's left stick)"); }
+            }
             j.deadZone = [dz respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(0.55, [dz doubleValue])) : 0.18;
             j.pushKey = [pk respondsToSelector:@selector(intValue)] ? [pk intValue] : 340;      // Shift: run from pushAt on
             j.pushAt = [pa respondsToSelector:@selector(doubleValue)] ? MAX(0.3, MIN(1.5, [pa doubleValue])) : 0.85;
@@ -1998,7 +2096,7 @@ static void pad_connected(GCController *c) {
     pthread_mutex_lock(&g_padMutex);
     int slot = pad_slot_of(c);
     if (slot < 0) {
-        NSUInteger first = vpad_active() ? 1 : 0;              // slot 0 is the virtual gamepad while it is on
+        NSUInteger first = vpad_present() ? 1 : 0;              // slot 0 is the virtual pad while it is there
         for (NSUInteger i = first; i <= GLFW_JOYSTICK_LAST; i++)
             if (g_pads[i] == (id)NSNull.null) { g_pads[i] = c; slot = (int)i; break; }
     }
@@ -2105,14 +2203,14 @@ static void pad_read(GCController *c, unsigned char buttons[15], float axes[6]) 
 static unsigned char g_padButtons[GLFW_JOYSTICK_LAST + 1][15]; static float g_padAxes[GLFW_JOYSTICK_LAST + 1][6]; static unsigned char g_padHat[GLFW_JOYSTICK_LAST + 1][1];
 static char g_padGuid[GLFW_JOYSTICK_LAST + 1][33]; static char g_padName[GLFW_JOYSTICK_LAST + 1][128];
 
-GLFW_API int glfwJoystickPresent(int j) { if (j == VPAD_SLOT) return vpad_active(); return pad_for(j) != nil; }
+GLFW_API int glfwJoystickPresent(int j) { if (j == VPAD_SLOT) return vpad_present(); return pad_for(j) != nil; }
 GLFW_API const float *glfwGetJoystickAxes(int j, int *c) {
-    if (j == VPAD_SLOT) { if (c) *c = vpad_active() ? 6 : 0; return vpad_active() ? g_vpadAxes : NULL; }
+    if (j == VPAD_SLOT) { if (c) *c = vpad_present() ? 6 : 0; return vpad_present() ? g_vpadAxes : NULL; }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     unsigned char b[15]; pad_read(p, b, g_padAxes[j]); if (c) *c = 6; return g_padAxes[j];
 }
 GLFW_API const unsigned char *glfwGetJoystickButtons(int j, int *c) {
-    if (j == VPAD_SLOT) { if (c) *c = vpad_active() ? 15 : 0; return vpad_active() ? g_vpadButtons : NULL; }
+    if (j == VPAD_SLOT) { if (c) *c = vpad_present() ? 15 : 0; return vpad_present() ? g_vpadButtons : NULL; }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     float a[6]; pad_read(p, g_padButtons[j], a); if (c) *c = 15; return g_padButtons[j];
 }
@@ -2120,7 +2218,7 @@ GLFW_API const unsigned char *glfwGetJoystickHats(int j, int *c) {
     if (j == VPAD_SLOT) {
         static unsigned char hat[1];
         hat[0] = (unsigned char)((g_vpadButtons[11] ? 1 : 0) | (g_vpadButtons[12] ? 2 : 0) | (g_vpadButtons[13] ? 4 : 0) | (g_vpadButtons[14] ? 8 : 0));
-        if (c) *c = vpad_active() ? 1 : 0; return vpad_active() ? hat : NULL;
+        if (c) *c = vpad_present() ? 1 : 0; return vpad_present() ? hat : NULL;
     }
     GCController *p = pad_for(j); if (!p) { if (c) *c = 0; return NULL; }
     unsigned char b[15]; float a[6]; pad_read(p, b, a);
@@ -2128,12 +2226,12 @@ GLFW_API const unsigned char *glfwGetJoystickHats(int j, int *c) {
     if (c) *c = 1; return g_padHat[j];
 }
 GLFW_API const char *glfwGetJoystickName(int j) {
-    if (j == VPAD_SLOT) return vpad_active() ? "pziOS Virtual Gamepad" : NULL;
+    if (j == VPAD_SLOT) return vpad_present() ? "pziOS Virtual Gamepad" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     strlcpy(g_padName[j], (p.vendorName ?: @"Game Controller").UTF8String, sizeof g_padName[j]); return g_padName[j];
 }
 GLFW_API const char *glfwGetJoystickGUID(int j) {
-    if (j == VPAD_SLOT) return vpad_active() ? "0300005e000000000000000000000000" : NULL;
+    if (j == VPAD_SLOT) return vpad_present() ? "0300005e000000000000000000000000" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     NSUInteger h = [(p.vendorName ?: @"Game Controller") hash];
     snprintf(g_padGuid[j], sizeof g_padGuid[j], "030000%02x%08lx0000%04x0000000000", 0x5e, (unsigned long)h & 0xffffffffUL, (unsigned)(j & 0xffff));
@@ -2141,12 +2239,12 @@ GLFW_API const char *glfwGetJoystickGUID(int j) {
 }
 GLFW_API void glfwSetJoystickUserPointer(int j, void *p) {}
 GLFW_API void *glfwGetJoystickUserPointer(int j) { return NULL; }
-GLFW_API int glfwJoystickIsGamepad(int j) { if (j == VPAD_SLOT) return vpad_active(); GCController *p = pad_for(j); return p && p.extendedGamepad != nil; }
+GLFW_API int glfwJoystickIsGamepad(int j) { if (j == VPAD_SLOT) return vpad_present(); GCController *p = pad_for(j); return p && p.extendedGamepad != nil; }
 GLFW_API int glfwUpdateGamepadMappings(const char *s) { return 1; }
 GLFW_API const char *glfwGetGamepadName(int j) { return glfwJoystickIsGamepad(j) ? glfwGetJoystickName(j) : NULL; }
 GLFW_API int glfwGetGamepadState(int j, GLFWgamepadstate *st) {
     if (j == VPAD_SLOT) {
-        if (!vpad_active()) return 0;
+        if (!vpad_present()) return 0;
         memcpy(st->buttons, g_vpadButtons, 15);
         memcpy(st->axes, g_vpadAxes, sizeof g_vpadAxes);
         return 1;
@@ -2156,7 +2254,7 @@ GLFW_API int glfwGetGamepadState(int j, GLFWgamepadstate *st) {
     if (input_log_enabled()) { static int n; static unsigned char last[15]; if (memcmp(last, st->buttons, 15) != 0 && n++ < 40) { memcpy(last, st->buttons, 15); glfwi_log("gamepad %d buttons changed: A%d B%d X%d Y%d LB%d RB%d start%d | LX=%.2f LY=%.2f", j, st->buttons[0], st->buttons[1], st->buttons[2], st->buttons[3], st->buttons[4], st->buttons[5], st->buttons[7], st->axes[0], st->axes[1]); } }
     return 1;
 }
-GLFW_API joystickfun glfwSetJoystickCallback(joystickfun cb) { pads_init(); joystickfun o = g_joyCb; g_joyCb = cb; if (cb && vpad_active()) { Ev e = {.type = EV_JOY, .a = VPAD_SLOT, .b = 0x00040001 /* GLFW_CONNECTED */}; push_event(e); } return o; }
+GLFW_API joystickfun glfwSetJoystickCallback(joystickfun cb) { pads_init(); joystickfun o = g_joyCb; g_joyCb = cb; if (cb && vpad_present()) { Ev e = {.type = EV_JOY, .a = VPAD_SLOT, .b = 0x00040001 /* GLFW_CONNECTED */}; push_event(e); } return o; }
 
 // ---------------------------------------------------------------- time ---
 GLFW_API double glfwGetTime(void) { return (double)(mach_absolute_time() - g_t0) * g_tb.numer / g_tb.denom / 1e9; }
