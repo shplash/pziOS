@@ -762,7 +762,10 @@ struct TouchLayoutEditor: View {
                         .contentShape(Capsule())      // a circle for round controls, the whole bar for the scroll strip
                         .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas")).onChanged { v in
                             if selected != item.id { selected = item.id }
-                            if !hideForDrag { withAnimation(.easeOut(duration: 0.12)) { hideForDrag = true } }
+                            // Only a real drag hides the panel; a tap must not make it flicker.
+                            if !hideForDrag, abs(v.translation.width) + abs(v.translation.height) > 4 {
+                                withAnimation(.easeOut(duration: 0.12)) { hideForDrag = true }
+                            }
                             let r = item.halfSize
                             item.x = min(max(v.location.x, r.width), W - r.width) / W
                             item.y = min(max(v.location.y, r.height), H - r.height) / H

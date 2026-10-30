@@ -921,8 +921,10 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGFloat p1 = MAX(0.3, MIN(1.5, self.pushAt));
     CGFloat p2 = MAX(0.5, MIN(1.5, self.push2At));
     self.deadRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * dz / 2, -size * dz / 2, size * dz, size * dz)].CGPath;
+    self.deadRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * dz / 2, -size * dz / 2, size * dz, size * dz)].CGPath;
+    self.pushRing.hidden = self.padStick;                    // the analog engine has no Run/Sprint stages to show
     self.pushRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * p1 / 2, -size * p1 / 2, size * p1, size * p1)].CGPath;
-    self.push2Ring.hidden = (self.pushKey2 == 0 || self.pushKey2 == self.pushKey || p2 <= p1 + 0.05);
+    self.push2Ring.hidden = self.padStick || (self.pushKey2 == 0 || self.pushKey2 == self.pushKey || p2 <= p1 + 0.05);
     self.push2Ring.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * p2 / 2, -size * p2 / 2, size * p2, size * p2)].CGPath;
     if (!self.tracking) {
         self.deadRing.position = c; self.pushRing.position = c; self.push2Ring.position = c;
