@@ -1049,7 +1049,13 @@ static void fps_note_frame(void) {
     [self updateCursorVisibility];
     // a controller, or a physical keyboard together with a mouse; the controller only hides the controls when the player left it that way
     BOOL away = (self.padConnected && pad_overlay_hides()) || kbm_connected();
-    if (self.controlsHidden || away) [self releaseLatches];   // a locked button must not stay held with nothing left to tap
+    if (self.controlsHidden || away) {                        // a locked button must not stay held with nothing left to tap
+        [self releaseLatches];
+        for (UIView *v in self.controls) {                     // and a thumb left on a stick must not leave WASD (or Run) held
+            if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
+            else if ([v isKindOfClass:ZOVPadStick.class]) [(ZOVPadStick *)v reset];
+        }
+    }
     for (UIView *v in self.controls) {
         BOOL isRadial = [v isKindOfClass:ZORadial.class];
         // A radial that holds Hide/Show is the way back, so it stays on screen while the rest is hidden.
