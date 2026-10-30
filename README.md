@@ -47,16 +47,19 @@ step exists.
 
 ## Features
 
-- Solo play, mods, saves, and direct-connect multiplayer.
-- **Controls**: editable touch layout with an aim stick, game controllers (remappable, with a stick deadzone and a
-  live input preview), or a virtual gamepad the game sees as a real controller. Keyboard and mouse too. On-screen
-  controls hide when a controller or keyboard and mouse are connected, unless you keep them.
-- **Display**: render resolution presets, UI margins sized to your screen (Auto, or set your own),
-  up to 120 Hz, iPad layouts.
-- **Performance options**: memory limit tiers chosen from what iOS lets the app use, garbage
-  collector choices (Parallel, pzGC, SGC, pzSGC), JIT compiler choices, ASTC texture compression
-  with a disk cache.
-- **Setup guide** that imports the game and walks through JIT.
+- **Play your own copy**: solo, mods, saves, direct-connect multiplayer.
+- **Touch controls**: a full layout editor — two-thumb aiming (drag to aim, hold to lock, fire modes), a scroll
+  strip, radial menus, an aim stick, saved layouts, and a virtual gamepad the game sees as a real controller.
+- **Real controllers**: remappable, with a stick deadzone, a live input preview, battery level, and optional
+  automatic hiding of the on-screen controls.
+- **Display**: render resolution presets, UI margins sized to your screen (Auto, or set your own), up to 120 Hz,
+  iPad layouts.
+- **Performance**: memory tiers from what iOS grants the app, four garbage collectors, three JIT compiler tiers,
+  ASTC textures with a disk cache, and an experimental Zink backend for mods that need OpenGL 4.5.
+- **A launcher that explains itself**: live status on the home screen, grouped settings with the reason for each
+  value, a setup guide, and a log you can share.
+
+The full list, including what this fork adds over upstream, is in [`docs/FEATURES.md`](docs/FEATURES.md).
 
 ## Supported Devices
 
@@ -163,7 +166,7 @@ which git ignores). For an IPA, edit `release.config` in the repository root.
 | `native/astc/` | C wrapper around ARM's astc-encoder |
 | `patches/` | Patches for the iOS OpenJDK build |
 | `scripts/` | Library conversion, IPA building and signing, the manual JIT script |
-| `docs/` | Build, distribution, game file, JIT and performance guides |
+| `docs/` | Build, distribution, feature list, game file, JIT and performance guides |
 | `licenses/` | Licence texts of the components we ship |
 
 ## Licensing and credits

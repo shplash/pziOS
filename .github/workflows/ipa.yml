@@ -19,6 +19,10 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ipa:
     name: Patched IPA

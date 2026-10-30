@@ -3,12 +3,19 @@ name: Build
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "licenses/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "licenses/**", "**/*.md"]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   launcher:
     name: Launcher UI (ZomUIPreview)
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

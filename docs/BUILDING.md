@@ -60,11 +60,17 @@ Set your own team and bundle identifier in `project.yml`. Install, then use the 
 
 ## 7. Building in CI
 
-`.github/workflows/build.yml` compiles the launcher UI target on every push (the device target cannot be built from the
-repository alone). `.github/workflows/ipa.yml` builds an unsigned IPA with `scripts/make-ipa.sh`, on demand from the
-Actions tab or on a `v*` tag, and uploads it as the `pziOS-ipa` artifact.
+`.github/workflows/build.yml` compiles the launcher UI target on every push that touches code (docs and Markdown are
+skipped). The device target cannot be built from the repository alone, so this is the compile check for the Swift
+sources.
 
-The IPA job needs the compiled parts from steps 1-5. By default it takes them from the last upstream release IPA; set
-the repository variable `PZIOS_SOURCE_IPA_URL` to use another one, or `PZIOS_BINARIES_URL` to a zip whose top level holds
-`runtime/` and `Frameworks/` (your own build of them). The resulting IPA contains the JRE and the game's libraries from
-that source, so keep the artifact private.
+`.github/workflows/ipa.yml` ("Patched IPA") produces a testable IPA without needing the JRE, MetalANGLE sources,
+StikJIT or the game's libraries: it compiles `libglfw.dylib` and the launcher executable from this repository, then
+swaps them into an official release IPA (chosen with the `release_tag` input, or the latest), keeping that release's
+runtime and JIT helper, and re-signs the app ad hoc with the release's entitlements. Run it from the Actions tab; the
+result is the `pziOS-ipa` artifact. It runs on the standard macOS runner and needs no particular Xcode version.
+
+`scripts/make-ipa.sh` remains the way to build a complete IPA from your own binaries (steps 1-5) on a Mac; the
+workflow above is the shortcut for testing launcher and overlay changes only.
+
+`docs/FEATURES.md` lists what the app can do, and what is still open.
