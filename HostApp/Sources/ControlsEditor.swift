@@ -114,8 +114,13 @@ private struct RadialPreview: View {
                     RoundedRectangle(cornerRadius: corner).fill(Color(white: 0.1).opacity(0.78))
                     RoundedRectangle(cornerRadius: corner).stroke(Color.white.opacity(0.6), lineWidth: 2)
                     if iconsOn, let icon = sl.icon, !icon.isEmpty, sl.kind != .mode, sl.kind != .firemode {
-                        Image(systemName: icon).font(.system(size: min(g.size.width, g.size.height) * 0.44, weight: .semibold))
-                            .foregroundStyle(.white)
+                        VStack(spacing: 1) {
+                            Image(systemName: icon).font(.system(size: min(g.size.width, g.size.height) * 0.38, weight: .semibold))
+                            if !sl.label.isEmpty {
+                                Text(sl.label).font(.system(size: 7.5, weight: .bold)).minimumScaleFactor(0.6).lineLimit(1)
+                            }
+                        }
+                        .foregroundStyle(.white)
                     } else {
                         Text(sl.label.isEmpty ? (sl.kind == .none ? "—" : "?") : sl.label)
                             .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).minimumScaleFactor(0.55).lineLimit(1).padding(4)
@@ -940,11 +945,13 @@ struct TouchLayoutEditor: View {
                 }
 
                 if !pad {
+                    sectionTitle("Editing")
                     Picker("", selection: $driving) {
                         Text("On foot").tag(false); Text("Driving").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: driving) { _, _ in switchSlot() }
+                    Divider().overlay(Color.white.opacity(0.06))
                 }
 
                 VStack(alignment: .leading, spacing: M.gap) {
@@ -1590,10 +1597,16 @@ private struct Chip: View {
             } else {
                 if item.kind == .radial && item.label.isEmpty && !(iconsOn && !(item.icon ?? "").isEmpty) {
                     Image(systemName: "circle.hexagongrid.fill").font(.system(size: item.size * 0.34, weight: .semibold)).foregroundStyle(.white)
-                } else if iconsOn, let icon = item.icon, !icon.isEmpty, item.kind != .mode, item.kind != .firemode {
-                    Image(systemName: icon)
-                        .font(.system(size: item.size * 0.36, weight: .semibold))
-                        .foregroundStyle(.white)
+                if iconsOn, let icon = item.icon, !icon.isEmpty, item.kind != .mode, item.kind != .firemode {
+                    VStack(spacing: 0) {
+                        Image(systemName: icon)
+                            .font(.system(size: item.size * 0.30, weight: .semibold))
+                        if !item.label.isEmpty {
+                            Text(item.label).font(.system(size: max(8, item.size * 0.17), weight: .bold))
+                                .minimumScaleFactor(0.7).lineLimit(1)
+                        }
+                    }
+                    .foregroundStyle(.white)
                 } else {
                     Text(item.label).font(.system(size: item.size > 50 ? 15 : 12, weight: .bold)).foregroundStyle(.white)
                         .minimumScaleFactor(0.45).lineLimit(1).padding(.horizontal, 4)

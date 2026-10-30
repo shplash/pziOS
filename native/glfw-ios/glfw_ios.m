@@ -364,14 +364,26 @@ static NSString *default_icon_for_key(int code) {
     [b addSubview:b.iconView];
     return b;
 }
-/// Shows the icon when there is one and icons are on, otherwise the text label. The PAD/TCH button (kind 4) and the fire
-/// mode toggle (kind 7) always keep their text, because that text is the state you need to read.
+/// Shows the icon when there is one and icons are on, with a small caption under it, otherwise the text label alone. The
+/// PAD/TCH button (kind 4) and the fire mode toggle (kind 7) always keep their text, because that text is the state you need
+/// to read.
 - (void)refreshIcon {
     BOOL allow = (self.kind != 4 && self.kind != 7);
-    UIImage *img = allow ? icon_image(self.iconName, self.bounds.size.width * 0.42) : nil;
+    UIImage *img = allow ? icon_image(self.iconName, self.bounds.size.width * 0.34) : nil;
+    self.iconView.frame = CGRectMake(self.bounds.size.width * 0.26, self.bounds.size.height * 0.12,
+                                     self.bounds.size.width * 0.48, self.bounds.size.height * 0.48);
     self.iconView.image = img;
     self.iconView.hidden = (img == nil);
-    self.label.hidden = (img != nil);
+    if (img && self.label.text.length) {
+        self.label.hidden = NO;
+        self.label.font = [UIFont boldSystemFontOfSize:MAX(8, self.bounds.size.width * 0.17)];
+        self.label.adjustsFontSizeToFitWidth = YES; self.label.minimumScaleFactor = 0.7;
+        self.label.frame = CGRectMake(0, self.bounds.size.height * 0.58, self.bounds.size.width, self.bounds.size.height * 0.30);
+    } else {
+        self.label.hidden = (img != nil);
+        self.label.font = [UIFont boldSystemFontOfSize:self.bounds.size.width > 50 ? 15 : 12];
+        self.label.frame = self.bounds;
+    }
 }
 - (void)updateLook {
     if (self.armed && !self.down) self.backgroundColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.2 alpha:0.6];     // armed: amber until it fires on release
@@ -700,11 +712,18 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         v.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.78]; v.layer.cornerRadius = MIN(sz.width, sz.height) / 2; v.layer.masksToBounds = YES;
         v.layer.borderWidth = 2; v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
         v.userInteractionEnabled = NO;
-        UIImage *img = icon_image(s.icon, sz.width * 0.42);
+        UIImage *img = icon_image(s.icon, sz.width * 0.34);
         if (img) {
-            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectInset(v.bounds, sz.width * 0.24, sz.height * 0.24)];
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(sz.width * 0.26, sz.height * 0.10, sz.width * 0.48, sz.height * 0.44)];
             iv.contentMode = UIViewContentModeScaleAspectFit; iv.image = img;
             [v addSubview:iv];
+            if (s.label.length) {
+                UILabel *cap = [[UILabel alloc] initWithFrame:CGRectMake(0, sz.height * 0.54, sz.width, sz.height * 0.34)];
+                cap.text = s.label; cap.textAlignment = NSTextAlignmentCenter; cap.textColor = UIColor.whiteColor;
+                cap.font = [UIFont boldSystemFontOfSize:9]; cap.adjustsFontSizeToFitWidth = YES; cap.minimumScaleFactor = 0.6;
+                cap.userInteractionEnabled = NO;
+                [v addSubview:cap];
+            }
         } else {
             UILabel *l = [[UILabel alloc] initWithFrame:v.bounds];
             l.text = s.label.length ? s.label : (empty ? @"\u2014" : @"?");
@@ -1442,6 +1461,20 @@ static NSString *log_vehicle_state(void) {
 - (void)pollVehicle {
     id autoPref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.drivingAuto"];
     if (autoPref && ![autoPref boolValue]) return;
+    static BOOL readyLogged;
+    if (!readyLogged) {                     // did the game's Lua run at all? That one line explains most reports
+        NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString *base = docs.count ? docs.firstObject : nil;
+        if (base) {
+            for (NSString *rel in @[@"home/Zomboid/pzios_drive_ready.txt", @"home/Zomboid/Lua/pzios_drive_ready.txt"]) {
+                if (read_trimmed([base stringByAppendingPathComponent:rel])) {
+                    readyLogged = YES;
+                    glfwi_log("drive script: running in the game (ready marker found)");
+                    break;
+                }
+            }
+        }
+    }
     NSString *s = vehicle_state_file();
     if (s.length == 0) s = log_vehicle_state();
     if (s.length == 0) {

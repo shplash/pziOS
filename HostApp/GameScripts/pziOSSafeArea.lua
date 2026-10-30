@@ -346,6 +346,10 @@ do
         w:write(inCar and "1" or "0")
         w:close()
     end
+    do      -- tells the app's log that the Lua side is alive, even before a vehicle is entered
+        local r = getFileWriter("pzios_drive_ready.txt", true, false)
+        if r then r:write("1"); r:close() end
+    end
     local function vehicleUpdate()
         if not getPlayer then return end
         local ok, p = pcall(getPlayer)

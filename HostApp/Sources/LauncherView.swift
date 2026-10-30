@@ -456,6 +456,7 @@ struct LauncherView: View {
             }
             Text("Project Zomboid on iPhone and iPad")
                 .font(.system(size: m.v(13), weight: .medium)).foregroundStyle(Theme.dim).padding(.top, m.v(1))
+            Capsule().fill(Theme.accent.opacity(0.55)).frame(width: m.v(38), height: m.v(2)).padding(.top, m.v(7))
 
             playButton(m).padding(.top, m.v(18))
 
@@ -597,16 +598,21 @@ private struct TileButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: m.v(9)) {
-                Image(systemName: icon).font(.system(size: m.v(14), weight: .semibold)).frame(width: m.v(18))
+            HStack(spacing: m.v(10)) {
+                Image(systemName: icon)
+                    .font(.system(size: m.v(13), weight: .semibold))
+                    .frame(width: m.v(26), height: m.v(26))
+                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: m.v(7)))
+                    .overlay(RoundedRectangle(cornerRadius: m.v(7)).stroke(Color.white.opacity(0.10), lineWidth: 1))
                 VStack(alignment: .leading, spacing: m.v(1)) {
                     Text(title).font(.system(size: m.v(12.5), weight: .semibold)).lineLimit(1)
                     Text(subtitle).font(.system(size: m.v(10))).foregroundStyle(Theme.dim).lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.system(size: m.v(9), weight: .bold)).foregroundStyle(Theme.faint)
             }
-            .padding(.horizontal, m.v(11))
-            .frame(maxWidth: .infinity, alignment: .leading).frame(height: m.v(48))
+            .padding(.horizontal, m.v(10))
+            .frame(maxWidth: .infinity, alignment: .leading).frame(height: m.v(52))
             .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(12)))
             .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(Color.white.opacity(0.08), lineWidth: 1))
             .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(Theme.accent, lineWidth: focused ? 2 : 0).padding(-3))
