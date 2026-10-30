@@ -101,6 +101,7 @@ enum RadialGeometry {
 private struct RadialPreview: View {
     let item: TouchItem
     let W: CGFloat, H: CGFloat
+    var iconsOn: Bool = true
     var body: some View {
         let slots = Array((item.slots ?? []).prefix(8))
         let g = RadialGeometry.layout(shape: item.radialShape ?? 0, n: slots.count, center: CGPoint(x: item.x * W, y: item.y * H),
@@ -111,8 +112,13 @@ private struct RadialPreview: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: corner).fill(Color(white: 0.1).opacity(0.78))
                     RoundedRectangle(cornerRadius: corner).stroke(Color.white.opacity(0.6), lineWidth: 2)
-                    Text(sl.label.isEmpty ? (sl.kind == .none ? "—" : "?") : sl.label)
-                        .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).minimumScaleFactor(0.55).lineLimit(1).padding(4)
+                    if iconsOn, let icon = sl.icon, !icon.isEmpty, sl.kind != .mode, sl.kind != .firemode {
+                        Image(systemName: icon).font(.system(size: min(g.size.width, g.size.height) * 0.44, weight: .semibold))
+                            .foregroundStyle(.white)
+                    } else {
+                        Text(sl.label.isEmpty ? (sl.kind == .none ? "—" : "?") : sl.label)
+                            .font(.system(size: 13, weight: .bold)).foregroundStyle(.white).minimumScaleFactor(0.55).lineLimit(1).padding(4)
+                    }
                 }
                 .frame(width: g.size.width, height: g.size.height)
                 .opacity(sl.kind == .none ? 0.45 : 1)
@@ -640,7 +646,7 @@ struct TouchLayoutEditor: View {
                         .position(x: item.x * W, y: item.y * H)
                 }
                 if let i = selectedIndex, layout.items[i].kind == .radial {      // how the selected radial opens in game
-                    RadialPreview(item: layout.items[i], W: W, H: H).allowsHitTesting(false)
+                    RadialPreview(item: layout.items[i], W: W, H: H, iconsOn: iconsOn).allowsHitTesting(false)
                 }
                 if panelHidden {
                     Button {
@@ -1277,7 +1283,14 @@ struct TouchLayoutEditor: View {
             if n > 0 { Button { moveSlot(i, n) } label: { Label("Move up", systemImage: "arrow.up") } }
             Button(role: .destructive) { editSlot(i, n) { $0 = RadialSlot(id: $0.id) } } label: { Label("Clear", systemImage: "xmark") }
         } label: {
-            field { Text(slotSends(sl)) }
+            field {
+                HStack(spacing: 6) {
+                    if let icon = sl.icon, !icon.isEmpty, sl.kind != .mode, sl.kind != .firemode {
+                        Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+                    }
+                    Text(slotSends(sl)).lineLimit(1)
+                }
+            }
         }
     }
 

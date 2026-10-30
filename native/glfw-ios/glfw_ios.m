@@ -371,6 +371,8 @@ static NSString *default_icon_for_key(int code) {
 - (void)setDown:(BOOL)d {
     if (_down == d) return; _down = d;
     [self updateLook];
+    [UIView animateWithDuration:0.09 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{ self.transform = d ? CGAffineTransformMakeScale(0.93, 0.93) : CGAffineTransformIdentity; } completion:nil];
     GLFWiOSView *gv = (GLFWiOSView *)self.superview;
     if (self.kind == 0) push_key(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
     else if (self.kind == 1) push_mouse(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
@@ -871,6 +873,11 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
             if (want2) [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
         }
     }
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    self.thumb.fillColor = (self.pushing2 ? [UIColor colorWithRed:1 green:0.58 blue:0.35 alpha:0.8]
+                           : self.pushing ? [UIColor colorWithRed:1 green:0.85 blue:0.45 alpha:0.75]
+                           : [UIColor colorWithWhite:1 alpha:0.55]).CGColor;
+    [CATransaction commit];
 }
 - (void)reset {
     [self set:NO key:self.keyUp flag:&_up]; [self set:NO key:self.keyLeft flag:&_left];
@@ -878,7 +885,10 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     if (self.pushing) { self.pushing = NO; if (self.pushKey) push_key(self.pushKey, GLFW_RELEASE); }
     if (self.pushing2) { self.pushing2 = NO; if (self.pushKey2) push_key(self.pushKey2, GLFW_RELEASE); }
     CGFloat r = self.bounds.size.width / 2;
-    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r, r); [CATransaction commit];
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    self.thumb.position = CGPointMake(r, r);
+    self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
+    [CATransaction commit];
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self update:ts.anyObject]; }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self update:ts.anyObject]; }
