@@ -10,7 +10,8 @@ name: Build
 # before use and fetched again when an entry is missing or damaged, so the cache can never produce a broken IPA.
 #
 # A new push replaces the run that is still going (see concurrency below): one build per branch at a time, nothing is
-# built twice.
+# built twice. The job runs on an Intel macOS runner, because the arm64 pool is the one that queues for so long that
+# GitHub cancels the job before it starts; nothing built here depends on the runner's architecture.
 #
 # It starts on its own for pushes that touch code, and by hand from the Actions tab (with any release tag). The IPA is
 # uploaded as the pziOS-ipa artifact and attached to the draft "builds" release, so it can be downloaded like any other
@@ -42,7 +43,11 @@ concurrency:
 jobs:
   build:
     name: Build IPA
-    runs-on: macos-15
+    # The Intel image on purpose. Everything here is cross-compiled (arm64 iOS through clang and xcodebuild), so the
+    # runner's own architecture makes no difference, while the arm64 macOS pool (macos-15, macos-14, macos-latest) is the
+    # one GitHub is chronically short of: jobs sat there for 15 minutes and were cancelled before they ever started.
+    # macos-15-intel also has 4 CPUs and 14 GB instead of 3 and 7.
+    runs-on: macos-15-intel
     timeout-minutes: 60      # one job now does what the compile check and the IPA job used to do in turn
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"      # the bottles are cached below; refreshing the formula database only costs time
