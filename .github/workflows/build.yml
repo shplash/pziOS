@@ -42,13 +42,18 @@ concurrency:
 
 jobs:
   build:
-    name: Build IPA
-    # The Intel image on purpose. Everything here is cross-compiled (arm64 iOS through clang and xcodebuild), so the
-    # runner's own architecture makes no difference, while the arm64 macOS pool (macos-15, macos-14, macos-latest) is the
-    # one GitHub is chronically short of: jobs sat there for 15 minutes and were cancelled before they ever started.
-    # macos-15-intel also has 4 CPUs and 14 GB instead of 3 and 7.
-    runs-on: macos-15-intel
+    name: Build IPA (${{ matrix.image }})
+    # Two Intel images on purpose: the build then has two queues to land in instead of one. The arm64 macOS pool
+    # (macos-15, macos-14, macos-latest) is the one GitHub is chronically short of; jobs sat there for 15 minutes and were
+    # cancelled before they ever started. Nothing here depends on the runner's architecture (clang and xcodebuild
+    # cross-compile to arm64 iOS), and both Intel images have 4 CPUs and 14 GB. Whichever leg gets a machine first
+    # publishes the IPA; the publish step notices when the other leg already did.
+    runs-on: ${{ matrix.image }}
     timeout-minutes: 60      # one job now does what the compile check and the IPA job used to do in turn
+    strategy:
+      fail-fast: false       # a leg cancelled for capacity must not take the other one down
+      matrix:
+        image: [macos-15-intel, macos-26-intel]
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"      # the bottles are cached below; refreshing the formula database only costs time
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -196,7 +201,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pziOS-ipa
+          name: pziOS-ipa-${{ matrix.image }}
           path: pziOS.ipa
           if-no-files-found: error
 
@@ -212,6 +217,12 @@ jobs:
           BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST" 2>/dev/null || echo 0)
           NAME="pziOS-$VERSION-$BUILD-${{ github.run_number }}.ipa"
           cp pziOS.ipa "$NAME"
+          # Both legs build the same thing: the first to get here uploads it, the other stops instead of clobbering it.
+          ASSETS=$(gh release view builds --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          if printf '%s\n' "$ASSETS" | grep -qx -- "$NAME"; then
+            echo "this build is already in the builds release (the other runner got there first)"
+            exit 0
+          fi
           if ! gh release view builds --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create builds --draft --repo "$GITHUB_REPOSITORY" \
               --title "pziOS builds" \
