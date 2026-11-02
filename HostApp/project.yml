@@ -69,7 +69,9 @@ targets:
         SUPPORTS_MACCATALYST: NO
     postBuildScripts:
       - name: Sign bundled JRE
-        script: '"$SRCROOT/sign_jre.sh"'
+        # Through bash, not executed directly: the script's executable bit is not part of every checkout (CI got
+        # "Permission denied"), and it needs no interpreter from the shebang to run this way.
+        script: '/bin/bash "$SRCROOT/sign_jre.sh"'
         basedOnDependencyAnalysis: false
   ZomJITHelper:
     configFiles: { Debug: Config/Signing.xcconfig, Release: Config/Signing.xcconfig }
