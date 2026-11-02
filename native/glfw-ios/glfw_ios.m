@@ -188,6 +188,16 @@ static void push_event(Ev e) {
     pthread_mutex_unlock(&g_evMutex);
 }
 
+// The fire mode a player picks in game with a MODE button (or a radial option that holds one): itemId -> mode, plus the
+// value the touch editor had stored for that button when the choice was made, so an editor change can win again.
+static NSMutableDictionary *fire_mode_dict(NSString *key) {
+    id d = [NSUserDefaults.standardUserDefaults dictionaryForKey:key];
+    return [d isKindOfClass:NSDictionary.class] ? [d mutableCopy] : [NSMutableDictionary dictionary];
+}
+static void fire_mode_save(NSString *key, NSDictionary *d) {
+    [NSUserDefaults.standardUserDefaults setObject:d forKey:key];
+}
+
 // ---------------------------------------------------------------- UIKit side ---
 static int glfw_key_from_hid(UIKeyboardHIDUsage u) {
     if (u >= 0x04 && u <= 0x1D) return 65 + (int)(u - 0x04);            // A-Z
@@ -352,8 +362,9 @@ static NSString *default_icon_for_key(int code) {
 // Two-thumb options, key and mouse buttons only, all off unless the touch editor turns them on:
 //  dragAimOn    - dragging a finger held on the button also moves the cursor, so one thumb attacks or shoves and aims at the same time.
 //  holdLockOn   - a long press keeps the button held after the finger lifts (e.g. RC for hands-free aiming); the next tap lets go.
-//  fireMode     - 0 default: held while the finger is down. 1 auto: held and re-pressed repeatedly. 2 release: holding only aims,
-//                 lifting the finger sends one press. A fire mode toggle (kind 7) switches its target between 0 and 2 in game.
+//  fireMode     - 0 held: pressed while the finger is down. 1 auto: pressed again and again while the finger is down.
+//                 2 release: holding only aims, lifting the finger sends one press. A fire mode toggle (kind 7) steps its
+//                 target through all three in game, and the choice is remembered across a restart.
 @property (nonatomic) BOOL dragAimOn, holdLockOn;
 @property (nonatomic) double holdLockDelay;             // seconds before a long-press lock engages (default 0.5)
 @property (nonatomic) int fireMode;
@@ -362,10 +373,13 @@ static NSString *default_icon_for_key(int code) {
 @property (nonatomic) BOOL armed, latched, dragActive;
 @property (nonatomic, weak) UITouch *dragTouch;
 @property (nonatomic) CGPoint dragStart, dragLast;
-@property (nonatomic) NSUInteger pressToken;
+@property (nonatomic) NSUInteger pressToken, fireSeq;   // fireSeq: a fire-on-release still in flight must not cut a newer press
 + (instancetype)buttonWithTitle:(NSString *)t kind:(int)k code:(int)c size:(CGFloat)size;
 - (void)releaseLatch;
 - (void)stopAuto;
+- (void)applyFireMode:(int)m;
+- (void)fireOnce;
+- (void)resetForRemoval;
 - (void)refreshIcon;
 @end
 @interface GLFWiOSView : UIView <UIGestureRecognizerDelegate>
@@ -387,6 +401,7 @@ static NSString *default_icon_for_key(int code) {
 @property (nonatomic) BOOL drivingActive;                // the driving layout is on screen instead of the on-foot one
 @property (nonatomic) NSInteger lastVehicleState;         // 0 on foot, 1 in a vehicle, -1 not read yet
 @property (nonatomic, strong) NSTimer *drivePoll;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *fireBase;   // itemId -> the fire mode the editor stored
 - (void)mouseDelta:(CGPoint)d;
 - (void)moveCursorTo:(CGPoint)p;
 - (void)setMouseConnected:(BOOL)on;
@@ -397,6 +412,7 @@ static NSString *default_icon_for_key(int code) {
 - (void)cycleFireModeFrom:(ZOButton *)toggle;
 - (void)cycleFireModeForTarget:(NSString *)targetId;
 - (void)updateFireToggles;
+- (void)applySavedFireModes;
 - (void)updateControlVisibility;
 - (void)updateCursorVisibility;
 - (void)setPadConnected:(BOOL)on;
@@ -485,6 +501,42 @@ static NSString *default_icon_for_key(int code) {
     else if (self.kind == 1) push_mouse(self.code, press ? GLFW_PRESS : GLFW_RELEASE);
 }
 - (void)stopAuto { [self.autoTimer invalidate]; self.autoTimer = nil; }
+/// Switches the button to another fire mode, letting go of whatever the old one left behind: an auto timer stops, an armed
+/// release-mode press is dropped, and a press on screen is released, so a mode change can never strand a held key.
+- (void)applyFireMode:(int)m {
+    m = MAX(0, MIN(2, m));
+    if (m == self.fireMode) return;
+    self.fireSeq++;                                         // a press still on its way out must not land on the new mode
+    [self stopAuto];
+    self.armed = NO;
+    self.latched = NO;
+    if (self.down) [self setDown:NO];
+    self.fireMode = m;
+    [self updateLook];
+}
+/// Fire on release: one short press as the finger lifts. The token keeps a release that is still in flight from cutting a
+/// newer press short, and 0.16 s is long enough to survive a dropped frame or two.
+- (void)fireOnce {
+    NSUInteger seq = ++self.fireSeq;
+    self.armed = NO;
+    static BOOL logged;
+    if (!logged) { logged = YES; glfwi_log("fire mode: a button in release mode sent its press as the finger lifted"); }
+    [self setDown:YES];
+    __weak ZOButton *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.16 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ZOButton *s = ws;
+        if (s && s.fireSeq == seq && s.down) [s setDown:NO];
+    });
+}
+/// Called before the control leaves the screen: nothing may stay held and no timer may outlive its view.
+- (void)resetForRemoval {
+    self.fireSeq++;
+    [self stopAuto];
+    self.armed = NO;
+    self.latched = NO;
+    if (self.down) [self setDown:NO];
+    [self updateLook];
+}
 - (void)autoTick:(NSTimer *)tm {
     if (!self.down || self.fireMode != 1) { [self stopAuto]; return; }
     [self sendQuiet:NO];
@@ -495,13 +547,20 @@ static NSString *default_icon_for_key(int code) {
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     if (self.latched) { [self releaseLatch]; self.dragTouch = nil; return; }       // a tap on a held button lets go of it
+    self.fireSeq++;                                                                // a fire-on-release still in flight must not cut this press short
     UITouch *t = ts.anyObject;
     if (!self.dragTouch) { self.dragTouch = t; self.dragStart = self.dragLast = [t locationInView:self.superview]; self.dragActive = NO; }
     NSUInteger tok = ++self.pressToken;
-    if (self.fireMode == 2 && self.kind <= 1) { self.armed = YES; [self updateLook]; return; }     // release mode: nothing is sent until the finger lifts
+    if (self.fireMode == 2 && self.kind <= 1) {                                     // release mode: holding only aims, the press comes as the finger lifts
+        self.armed = YES; [self updateLook];
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+        return;
+    }
     self.down = YES;
-    if (self.fireMode == 1 && self.kind <= 1 && !self.autoTimer)
-        self.autoTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(autoTick:) userInfo:nil repeats:YES];
+    if (self.fireMode == 1 && self.kind <= 1 && !self.autoTimer) {
+        self.autoTimer = [NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(autoTick:) userInfo:nil repeats:YES];
+        [NSRunLoop.mainRunLoop addTimer:self.autoTimer forMode:NSRunLoopCommonModes];   // keeps re-pressing while the game holds the run loop
+    }
     if (self.holdLockOn && self.kind <= 1 && self.fireMode == 0) {                  // auto and release modes don't lock
         __weak ZOButton *ws = self;
         double delay = self.holdLockDelay > 0 ? self.holdLockDelay : 0.5;
@@ -531,12 +590,8 @@ static NSString *default_icon_for_key(int code) {
     if (self.dragTouch && [ts containsObject:self.dragTouch]) { self.dragTouch = nil; self.dragActive = NO; }
     [self stopAuto];
     if (self.armed) {                                                               // fire on release: one quick press as the finger lifts
-        self.armed = NO; [self updateLook];
-        if (!cancelled) {
-            self.down = YES;
-            __weak ZOButton *ws = self;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ ws.down = NO; });
-        }
+        if (!cancelled) [self fireOnce];
+        else { self.armed = NO; [self updateLook]; }
         return;
     }
     if (cancelled) [self releaseLatch];
@@ -1375,19 +1430,68 @@ static void fps_note_frame(void) {
     return nil;
 }
 - (void)cycleFireModeFrom:(ZOButton *)toggle { [self cycleFireModeForTarget:toggle.targetId]; }
+/// One tap steps the target through the three modes: held (the default) -> one press as the finger lifts -> auto (pressed
+/// again and again while the finger is down) -> held. The choice is remembered in NSUserDefaults, so it also survives the
+/// automatic switch to the driving layout and a restart, until the touch editor's own setting for that button changes.
 - (void)cycleFireModeForTarget:(NSString *)targetId {
     ZOButton *t = [self buttonWithItemId:targetId]; if (!t || t.kind > 1) return;
-    t.fireMode = t.fireMode == 2 ? 0 : 2;                 // auto counts as default: holding a button already repeats most actions
+    int next = t.fireMode == 0 ? 2 : t.fireMode == 2 ? 1 : 0;
+    NSNumber *stored = t.itemId.length ? self.fireBase[t.itemId] : nil;      // what the editor saved, before any in-game change
+    [t applyFireMode:next];
+    if (t.itemId.length) {
+        NSMutableDictionary *modes = fire_mode_dict(@"zom.fireModes"), *bases = fire_mode_dict(@"zom.fireModeBase");
+        if (next == 0) {                        // held is what the editor stored anyway: no override left to keep
+            [modes removeObjectForKey:t.itemId]; [bases removeObjectForKey:t.itemId];
+        } else {
+            modes[t.itemId] = @(next);
+            if (!bases[t.itemId]) bases[t.itemId] = stored ?: @0;
+        }
+        fire_mode_save(@"zom.fireModes", modes); fire_mode_save(@"zom.fireModeBase", bases);
+    }
     [self updateFireToggles];
     [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+    glfwi_log("fire mode: %s is now %s", (t.itemId ?: t.label ?: @"a button").UTF8String ?: "a button",
+              next == 0 ? "held while pressed" : next == 2 ? "one press when the finger lifts" : "auto (re-pressed while held)");
 }
+/// The fire mode toggle's face: the mode of the button it changes, in that mode's word and colour, so a tap visibly does
+/// something even when the button it changes is at the other end of the screen.
 - (void)updateFireToggles {
-    static NSString *const names[] = { @"DEF", @"AUTO", @"REL" };
+    static NSString *const names[] = { @"HOLD", @"AUTO", @"LIFT" };          // LIFT: one press as the finger lifts
     for (UIView *v in self.controls) {
         if (![v isKindOfClass:ZOButton.class] || ((ZOButton *)v).kind != 7) continue;
-        ZOButton *t = [self buttonWithItemId:((ZOButton *)v).targetId];
-        ((ZOButton *)v).label.text = t ? names[MAX(0, MIN(2, t.fireMode))] : @"—";
+        ZOButton *toggle = (ZOButton *)v;
+        ZOButton *t = [self buttonWithItemId:toggle.targetId];
+        int m = t ? MAX(0, MIN(2, t.fireMode)) : 0;
+        toggle.label.text = t ? names[m] : @"—";
+        toggle.label.font = [UIFont boldSystemFontOfSize:MAX(9, toggle.bounds.size.width * 0.20)];
+        toggle.label.adjustsFontSizeToFitWidth = YES; toggle.label.minimumScaleFactor = 0.6;
+        UIColor *tint = m == 0 ? UIColor.whiteColor
+                     : m == 2 ? [UIColor colorWithRed:1 green:0.82 blue:0.35 alpha:1]
+                              : [UIColor colorWithRed:1 green:0.55 blue:0.45 alpha:1];
+        toggle.label.textColor = t ? tint : UIColor.whiteColor;
+        toggle.layer.borderColor = (t && m != 0 ? tint : [UIColor colorWithWhite:1 alpha:0.6]).CGColor;
     }
+}
+/// Puts back the fire mode a player chose in game, for the buttons the layout that is being installed holds. An override is
+/// dropped when the touch editor's own value for that button no longer matches the one it was made against, so the editor
+/// always wins in the end.
+- (void)applySavedFireModes {
+    NSMutableDictionary *modes = fire_mode_dict(@"zom.fireModes"), *bases = fire_mode_dict(@"zom.fireModeBase");
+    if (modes.count == 0) return;
+    BOOL changed = NO;
+    for (UIView *v in self.controls) {
+        if (![v isKindOfClass:ZOButton.class]) continue;
+        ZOButton *b = (ZOButton *)v;
+        if (b.kind > 1 || b.itemId.length == 0) continue;
+        NSNumber *m = modes[b.itemId], *base = bases[b.itemId], *stored = self.fireBase[b.itemId];
+        if (!m || !stored) continue;                                   // not in this layout: leave its override alone
+        if (!base || base.intValue != stored.intValue) {               // the editor changed it since: its value wins
+            [modes removeObjectForKey:b.itemId]; [bases removeObjectForKey:b.itemId]; changed = YES;
+            continue;
+        }
+        b.fireMode = MAX(0, MIN(2, m.intValue));
+    }
+    if (changed) { fire_mode_save(@"zom.fireModes", modes); fire_mode_save(@"zom.fireModeBase", bases); }
 }
 - (void)toggleControls {
     self.controlsHidden = !self.controlsHidden;
@@ -1406,7 +1510,8 @@ static void fps_note_frame(void) {
     if (self.controlsHidden || away) {                        // a locked button must not stay held with nothing left to tap
         [self releaseLatches];
         for (UIView *v in self.controls) {                     // and a thumb left on a stick must not leave WASD (or Run) held
-            if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
+            if ([v isKindOfClass:ZOButton.class]) [(ZOButton *)v resetForRemoval];
+            else if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
             else if ([v isKindOfClass:ZOVPadStick.class]) [(ZOVPadStick *)v reset];
         }
     }
@@ -1445,6 +1550,7 @@ static void fps_note_frame(void) {
     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
     CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;   // 5% floor: under 1% iOS stops delivering touches
     int tag = 30;
+    self.fireBase = [NSMutableDictionary dictionary];     // what the editor stored for each button, before any in-game change
     BOOL radialHide = NO, radialMode = NO;                // a radial holding these replaces the standalone HIDE / PAD buttons
     for (NSDictionary *it in items) {
         if (![it isKindOfClass:NSDictionary.class]) continue;
@@ -1531,6 +1637,7 @@ static void fps_note_frame(void) {
             b.holdLockOn = [hl respondsToSelector:@selector(boolValue)] && [hl boolValue];
             b.fireMode = [fm respondsToSelector:@selector(intValue)] ? MAX(0, MIN(2, [fm intValue])) : 0;
         }
+        if (k <= 1 && b.itemId.length) self.fireBase[b.itemId] = @(b.fireMode);
         if (k == 7) b.targetId = [it[@"target"] isKindOfClass:NSString.class] ? it[@"target"] : nil;
         if (k == 9) b.code2 = [it[@"code2"] respondsToSelector:@selector(intValue)] ? [it[@"code2"] intValue] : 0;
         [b refreshIcon];
@@ -1545,6 +1652,7 @@ static void fps_note_frame(void) {
         self.hideButton.tag = 19; [self addSubview:self.hideButton];
     }
     if (!self.modeButton && !radialMode) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
+    [self applySavedFireModes];
     [self updateFireToggles];
     glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
     return YES;
@@ -1618,7 +1726,8 @@ static NSString *log_vehicle_state(void) {
 - (void)removeControlViews {
     [self releaseLatches];
     for (UIView *v in self.controls) {          // nothing may stay held when its view goes away
-        if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
+        if ([v isKindOfClass:ZOButton.class]) [(ZOButton *)v resetForRemoval];
+        else if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
         else if ([v isKindOfClass:ZOVPadStick.class]) [(ZOVPadStick *)v reset];
         else if ([v isKindOfClass:ZOAimStick.class]) [(ZOAimStick *)v reset];
         else if ([v isKindOfClass:ZORadial.class]) [(ZORadial *)v closeRing];

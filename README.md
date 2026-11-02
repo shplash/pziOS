@@ -49,7 +49,8 @@ step exists.
 
 - **Play your own copy**: solo, mods, saves, direct-connect multiplayer.
 - **Touch controls**: a full layout editor with presets (Default, Left-handed, Claw, Claw V, Pro, Max, Minimal) and SF
-  Symbol icons you can turn on or off, two-thumb aiming (drag to aim, hold to lock, fire modes), a movement stick that
+  Symbol icons you can turn on or off, two-thumb aiming (drag to aim, hold to lock, fire modes a MODE button steps through
+  hold, lift-to-fire and auto, and remembers), a movement stick that
   dead-zones, runs at the first mark and sprints when dragged past the rim, a scroll strip, radial menus and an aim
   stick, saved layouts you can share as JSON, and a virtual gamepad the game sees as a real controller. The movement
   stick floats under your thumb and latches its direction, and it can also run on an **Analog** engine that hands it to

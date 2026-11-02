@@ -17,7 +17,7 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var size: Double         // points
     // Two-thumb options for key and mouse buttons (all off unless set):
     var dragAim: Bool? = nil         // dragging a finger held on the button also moves the cursor: attack or shove while aiming
-    var fireMode: Int? = nil         // nil/0 held while pressed, 1 auto (re-pressed while held), 2 release (one press when the finger lifts)
+    var fireMode: Int? = nil         // nil/0 held while pressed, 1 auto (re-pressed while held), 2 lift (one press when the finger lifts)
     var holdLock: Bool? = nil        // a long press keeps the button held until the next tap (e.g. RC for hands-free aiming)
     var holdLockTime: Double? = nil  // seconds before that lock engages; nil = TouchItem.defaultHoldLockTime
     var target: String? = nil        // fire mode toggle: id of the button whose fire mode it cycles
@@ -55,7 +55,7 @@ struct RadialSlot: Codable, Identifiable, Equatable {
     var kind: Kind = .none
     var code: Int = 0
     var label: String = ""
-    var target: String? = nil        // firemode: the button it switches between Default and Release
+    var target: String? = nil        // firemode: the button whose fire mode it steps through hold, lift and auto
     var icon: String? = nil          // SF Symbol drawn on the option instead of its label
 }
 
@@ -184,6 +184,7 @@ enum TouchLayoutStore {
     }
     static func save(_ l: TouchLayout, pad: Bool = false, driving: Bool = false) {
         if driving { saveDriving(l); return }
+        if fireModes(load(pad: pad)) != fireModes(l) { forgetInGameModes() }
         if let d = try? JSONEncoder().encode(l), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: pad ? padKey : key) }
     }
     /// The layout the overlay swaps to while the player is in a vehicle (see pziOSDrive.lua and toggleDriving in glfw_ios.m).
@@ -193,7 +194,20 @@ enum TouchLayoutStore {
         return drivingDefaultLayout
     }
     static func saveDriving(_ l: TouchLayout) {
+        if fireModes(loadDriving()) != fireModes(l) { forgetInGameModes() }
         if let d = try? JSONEncoder().encode(l), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: drivingKey) }
+    }
+    /// Each key and mouse button's fire mode, so a save can tell whether the editor changed one.
+    private static func fireModes(_ l: TouchLayout) -> [String: Int] {
+        var d: [String: Int] = [:]
+        for i in l.items where i.kind == .key || i.kind == .mouse { d[i.id] = i.fireMode ?? 0 }
+        return d
+    }
+    /// A fire mode the MODE toggle set in game is remembered by the overlay (see cycleFireModeForTarget in glfw_ios.m).
+    /// Editing a fire mode here takes over again, so an old in-game choice never contradicts this editor.
+    private static func forgetInGameModes() {
+        UserDefaults.standard.removeObject(forKey: "zom.fireModes")
+        UserDefaults.standard.removeObject(forKey: "zom.fireModeBase")
     }
     /// Puts every movement stick on the same engine: nil/"keys" sends W/A/S/D (or the arrow keys), "pad" drives a virtual
     /// controller's left stick for analog, 360° walking. Both touch layouts are saved, along with the flag the overlay reads.
@@ -205,7 +219,7 @@ enum TouchLayoutStore {
         }
         UserDefaults.standard.set(engine == "pad", forKey: "zom.analogMovement")
     }
-    static func reset() { UserDefaults.standard.removeObject(forKey: key) }
+    static func reset() { UserDefaults.standard.removeObject(forKey: key); forgetInGameModes() }
 
     static let migratedKey = "zom.aimstickMigrated"
     static let drivingVersionKey = "zom.drivingLayoutVersion"     // 2 = the car-game driving layout (steering arrows, gas, brake)
@@ -264,7 +278,7 @@ enum TouchLayoutStore {
             ("run", .key, "RUN", 340, 626, 246, 54),         // left Shift: run
             ("crch", .key, "CRCH", 67, 98, 236, 56),         // C: sneak / crouch
             ("scroll", .scroll, "", 0, 500, 342, 64),
-            ("fmode", .firemode, "MODE", 0, 770, 256, 46),   // switches the attack button between Default and Release
+            ("fmode", .firemode, "MODE", 0, 770, 256, 46),   // steps the attack button through hold, lift to fire and auto
         ])
         l.items.append(radial("menu", "MENU", 392, 120, panelMenu))
         l = with(l, "atk") { $0.dragAim = true }
@@ -1183,7 +1197,7 @@ struct TouchLayoutEditor: View {
                     add(.radial, label: "", code: 0, size: 58)
                     if let n = layout.items.indices.last { layout.items[n].slots = (0..<4).map { _ in RadialSlot() } }
                 }
-                Button("Fire mode toggle") {      // switches one chosen button between Default and Release
+                Button("Fire mode toggle") {      // steps one chosen button through hold, lift to fire and auto
                     add(.firemode, label: "MODE", code: 0, size: 44)
                     if let n = layout.items.indices.last { layout.items[n].target = layout.items.first { $0.kind == .mouse && $0.code == 0 }?.id }
                 }
@@ -1399,9 +1413,12 @@ struct TouchLayoutEditor: View {
                 }
                 row("Fire mode") {
                     Picker("", selection: Binding(get: { layout.items[i].fireMode ?? 0 }, set: { layout.items[i].fireMode = $0 == 0 ? nil : $0 })) {
-                        Text("Default").tag(0); Text("Auto").tag(1); Text("Release").tag(2)
+                        Text("Hold").tag(0); Text("Auto").tag(1); Text("On lift").tag(2)
                     }.pickerStyle(.segmented)
                 }
+                Text("Hold: pressed while your finger is down. Auto: pressed again and again on its own. On lift: holding only aims, and one press goes as your finger lifts (pair it with Drag to aim). A fire mode toggle steps this between all three in game.")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder private func fireModeRows(_ i: Int, _ item: TouchItem) -> some View {
@@ -1412,7 +1429,7 @@ struct TouchLayoutEditor: View {
                         }
                     } label: { field { Text(layout.items.first { $0.id == item.target }.map(buttonName) ?? "Choose a button") } }
                 }
-                Text("Each tap in game switches that button between Default and Release.")
+                Text("Each tap in game steps that button through HOLD, LIFT and AUTO, and the toggle's face shows which one is on (the label you give it is replaced by that word). Your in-game choice is remembered across a restart, and the fire mode set above wins again whenever you change it.")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
     }
