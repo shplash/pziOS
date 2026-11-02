@@ -960,6 +960,11 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
             glfwi_log("analog movement: the game script bound the virtual controller, no wake press needed");
             return;
         }
+        id wake = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.analogWake"];
+        if (wake && ![wake boolValue]) {
+            glfwi_log("analog movement: wake press is off, leaving activation to the game");
+            return;
+        }
         g_vpadButtons[0] = 1;
         glfwi_log("analog movement: pressed A once so the game activates the virtual controller");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{

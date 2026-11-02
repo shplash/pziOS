@@ -382,7 +382,7 @@ end
 -- nothing" report.
 -- The launcher writes 1 or 0 to Zomboid/Lua/pzios_analog.txt before the game starts.
 do
-    local tries, bound = 0, false
+    local tries, bound, noApi = 0, false, false
 
     local function analogOn()
         local r = getFileReader("pzios_analog.txt", false)
@@ -394,7 +394,13 @@ do
 
     local function bind()
         if bound or not analogOn() then return true end
-        if not setPlayerJoypad or not getSpecificPlayer then return true end   -- an older build: nothing to bind with
+        if not setPlayerJoypad or not getSpecificPlayer then
+            if not noApi then
+                noApi = true
+                print("[pziOS] analog stick: this game build has no setPlayerJoypad, leaving it to the game (press A on the pad to activate it)")
+            end
+            return true
+        end
         local player = getSpecificPlayer(0)
         if not player then return false end                                   -- no character yet; try again on a later tick
         local ok = pcall(setPlayerJoypad, 0, 0, player, nil)                  -- joypad 0 = the virtual controller in slot 0

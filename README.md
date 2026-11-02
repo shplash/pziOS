@@ -48,13 +48,14 @@ step exists.
 ## Features
 
 - **Play your own copy**: solo, mods, saves, direct-connect multiplayer.
-- **Touch controls**: a full layout editor with presets (Default, Claw, Claw V, Pro, Max, Minimal) and SF Symbol
-  icons you can turn on or off, two-thumb aiming (drag to aim, hold to lock, fire modes), a movement stick that
+- **Touch controls**: a full layout editor with presets (Default, Left-handed, Claw, Claw V, Pro, Max, Minimal) and SF
+  Symbol icons you can turn on or off, two-thumb aiming (drag to aim, hold to lock, fire modes), a movement stick that
   dead-zones, runs at the first mark and sprints when dragged past the rim, a scroll strip, radial menus and an aim
-  stick, saved layouts, and a virtual gamepad the game sees as a real controller. The movement stick floats under
-  your thumb and latches its direction, and it can also run on an **Analog** engine that hands it to a virtual
-  controller's left stick, for 360° walking with a speed that follows the push (it keeps sending W/A/S/D as well, so
-  movement still works if the game is not using controller input). A separate **driving layout** —
+  stick, saved layouts you can share as JSON, and a virtual gamepad the game sees as a real controller. The movement
+  stick floats under your thumb and latches its direction, and it can also run on an **Analog** engine that hands it to
+  a virtual controller's left stick, for 360° walking with a speed that follows the push (pziOS binds that controller
+  to your character for you, and still sends W/A/S/D, so movement works even if the game is not using controller
+  input). A separate **driving layout** —
   steering arrows, gas, brake, a latching handbrake and Shift+W/Shift+S cruise control, no stick — takes over by itself
   when you get into a vehicle (or from a DRIVE button), and hands back when you get out.
 - **Real controllers**: remappable, with a stick deadzone, a live input preview, battery level, and optional
@@ -63,8 +64,8 @@ step exists.
   iPad layouts.
 - **Performance**: memory tiers from what iOS grants the app, four garbage collectors, three JIT compiler tiers,
   ASTC textures with a disk cache, and an experimental Zink backend for mods that need OpenGL 4.5.
-- **A launcher that explains itself**: live status on the home screen, settings that can be searched, the reason for
-  each value, a setup guide, and a log you can share.
+- **A launcher that explains itself**: live status on the home screen (including the movement engine), settings that can
+  be searched, the reason for each value, a setup guide, and a log you can read, copy or share right from the home screen.
 
 ## Supported Devices
 

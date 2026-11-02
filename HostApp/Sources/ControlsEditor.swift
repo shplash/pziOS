@@ -740,6 +740,11 @@ struct TouchLayoutEditor: View {
     @State private var hideForDrag = false       // the panel also steps aside while a control is being dragged, so it never blocks the drop
     @State private var driving = false           // editing the driving layout instead of the on-foot one
 
+    /// The layout as JSON, for sharing it (a bug report, or moving it to another device).
+    private var layoutJSON: String {
+        (try? JSONEncoder().encode(layout)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+
     private var selectedIndex: Int? { layout.items.firstIndex { $0.id == selected } }
 
     /// The driving layout only exists for the touch layout: the virtual gamepad has its own saved layout.
@@ -823,11 +828,14 @@ struct TouchLayoutEditor: View {
                     }.buttonStyle(PressStyle())
                     .position(x: W - 64, y: H - 40)
                 } else if !hideForDrag {
+                    // The panel is docked to the right and can be dragged; the display is clamped so it can never be lost off screen.
+                    let pw = min(360, max(272, W * 0.36))
+                    let px = min(max((W - pw) / 2 - 12 + panelOffset.width + panelDrag.width, -pw * 0.3), W - pw * 0.5)
+                    let py = min(max(panelOffset.height + panelDrag.height, -H * 0.4), H * 0.4)
                     panel
-                        .frame(width: min(360, max(272, W * 0.36)))
+                        .frame(width: pw)
                         .frame(maxHeight: H - 16)                  // never taller than the screen; the panel scrolls instead
-                        .offset(x: (W - min(360, max(272, W * 0.36))) / 2 - 12 + panelOffset.width + panelDrag.width,
-                                y: panelOffset.height + panelDrag.height)   // docked to the right edge, and draggable from there
+                        .offset(x: px, y: py)                       // docked to the right edge, and draggable from there
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
@@ -1029,6 +1037,9 @@ struct TouchLayoutEditor: View {
                     panelOffset.width += v.translation.width; panelOffset.height += v.translation.height; panelDrag = .zero
                 })
                 Spacer(minLength: 4)
+                ShareLink(item: layoutJSON) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+                }.buttonStyle(.plain)
                 Button {
                     Haptics.tap(); withAnimation(.easeOut(duration: 0.15)) { panelHidden = true }
                 } label: {
@@ -1089,6 +1100,16 @@ struct TouchLayoutEditor: View {
                 }
                 toggleRow("Show guides", $showGuides)
                 toggleRow("Icons on buttons", $iconsOn)
+                // Left-handed grip in one tap: mirrors every control left to right, which is what the Left-handed preset is.
+                Button {
+                    Haptics.tap()
+                    for i in layout.items.indices { layout.items[i].x = 1 - layout.items[i].x }
+                } label: {
+                    Label("Mirror left and right", systemImage: "arrow.left.and.right")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .frame(maxWidth: .infinity).frame(height: 32)
+                        .background(Color.white.opacity(0.12), in: Capsule()).foregroundStyle(.white)
+                }.buttonStyle(PressStyle())
             }
         )
     }
@@ -1285,7 +1306,7 @@ struct TouchLayoutEditor: View {
                     }.pickerStyle(.segmented)
                 }
                 if (layout.items[i].stickEngine ?? "keys") == "pad" {
-                    Text("Analog sends the stick to a virtual controller: 360° movement, with the speed following the push. Project Zomboid has to be using its controller support for that; if it is not, the stick still works as Keys.")
+                    Text("Analog sends the stick to a virtual controller: 360° movement, with the speed following the push. pziOS binds it to your character, and Project Zomboid then uses its controller aiming (the right stick) rather than the mouse. If you want mouse aim back, switch to Keys. Applies on the next start.")
                         .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                         .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 }
