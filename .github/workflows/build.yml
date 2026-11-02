@@ -1,15 +1,16 @@
 name: Build
 
-# One workflow for everything pziOS needs from CI:
+# One job per push: it compiles the touch overlay and the launcher, swaps them into an official release IPA (which keeps
+# that release's Java runtime, graphics libraries and JIT helper) and attaches the result to the draft "builds" release,
+# so a push costs one macOS runner instead of two. The launcher UI target used to be built again in a second job; the
+# app build here compiles the same Swift sources, so that second build only ever cost runner time.
 #
-#   checks  the launcher UI target and the touch overlay, compiled (the device target needs the bundled JRE and
-#           MetalANGLE, which are not in the repository, so these are the compile checks)
-#   ipa     a testable IPA: this repository's overlay and launcher swapped into an official release IPA, which keeps
-#           that release's Java runtime, graphics libraries and JIT helper
+# Cached between runs: the upstream release IPA (keyed by its tag; it is the largest download of a run and never changes
+# for a tag) and Homebrew's download cache (so xcodegen comes from the cache instead of the network). Both are checked
+# before use and fetched again when an entry is missing or damaged, so the cache can never produce a broken IPA.
 #
-# The two run side by side rather than one after the other. The IPA job compiles the same sources anyway, and macOS
-# runners are often short of capacity: a compile check that never gets a machine (GitHub cancels it after 15 minutes
-# of waiting) must not take the IPA down with it.
+# A new push replaces the run that is still going (see concurrency below): one build per branch at a time, nothing is
+# built twice.
 #
 # It starts on its own for pushes that touch code, and by hand from the Actions tab (with any release tag). The IPA is
 # uploaded as the pziOS-ipa artifact and attached to the draft "builds" release, so it can be downloaded like any other
@@ -36,60 +37,17 @@ permissions:
 
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: true     # a new push cancels the run it replaces, so only one build per branch is ever in flight
 
 jobs:
-  checks:
-    name: Compile checks
+  build:
+    name: Build IPA
     runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      # xcodegen validates that every source directory in project.yml exists. The device target lists HostApp/runtime
-      # (the bundled JRE and our native libraries), which is not in the repository (see docs/BUILDING.md), so create it
-      # empty here: this job builds the launcher UI target, which only needs Sources.
-      - name: Prepare the source tree
-        run: mkdir -p HostApp/runtime
-
-      - name: Generate the Xcode project from project.yml
-        working-directory: HostApp
-        run: xcodegen generate
-
-      # The device target needs the bundled JRE and MetalANGLE, which are not in the repository (see docs/BUILDING.md), so
-      # CI builds the launcher UI target: it compiles every Swift source, including the controller settings and editor.
-      - name: Build the launcher UI target
-        working-directory: HostApp
-        run: |
-          xcodebuild \
-            -project pziOS.xcodeproj \
-            -scheme ZomUIPreview \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-
-      # The same compile the IPA job does, so a change to the touch overlay is built on every push instead of only
-      # when an IPA is made. It needs nothing from the repository but the one source file.
-      - name: Compile native/glfw-ios
-        run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
-            -dynamiclib -fobjc-arc -O2 -install_name @rpath/libglfw.dylib \
-            native/glfw-ios/glfw_ios.m \
-            -framework UIKit -framework Foundation -framework QuartzCore -framework Metal \
-            -framework CoreGraphics -framework ImageIO -framework GameController \
-            -o libglfw.dylib
-          lipo -archs libglfw.dylib
-
-  ipa:
-    name: IPA
-    # Deliberately no `needs: checks`. This job compiles the overlay and the launcher itself, so it still catches a
-    # broken build; and when the runner pool is busy it queues next to the compile check instead of behind it.
-    runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60      # one job now does what the compile check and the IPA job used to do in turn
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"      # the bottles are cached below; refreshing the formula database only costs time
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -99,24 +57,68 @@ jobs:
           [ -n "$X" ] && sudo xcode-select -s "$X"
           xcodebuild -version
 
-      - name: Download and unpack the release IPA
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-xcodegen
+          restore-keys: brew-${{ runner.os }}-
+
+      - name: Find the release to patch
+        id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
         run: |
-          mkdir -p dl x
-          gh release download ${TAG:+"$TAG"} --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
-          IPA=$(ls dl/*.ipa | grep -vi no-game-libs | head -1)
-          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa | head -1)
+          set -euo pipefail
+          if [ -n "${TAG:-}" ]; then T="$TAG"; else T=$(gh release view --repo onlyknt/pziOS --json tagName --jq .tagName); fi
+          [ -n "$T" ] || { echo "::error::could not work out which release to patch"; exit 1; }
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+          echo "patching release $T"
+
+      - name: Cache the release IPA
+        id: ipa-cache
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: pz-ipa-${{ steps.upstream.outputs.tag }}
+
+      - name: Download the release IPA
+        if: steps.ipa-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dl
+          gh release download "${{ steps.upstream.outputs.tag }}" --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
+
+      - name: Unpack the release IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The IPA with the game's libraries first; the no-game-libs one is only a fallback.
+          pick() { ls dl/*.ipa 2>/dev/null | grep -vi no-game-libs | head -1 || true; }
+          IPA=$(pick)
+          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa 2>/dev/null | head -1 || true)
+          if [ -z "$IPA" ] || ! /usr/bin/unzip -t "$IPA" >/dev/null 2>&1; then
+            echo "::warning::the cached release IPA is missing or damaged, downloading it again"
+            rm -rf dl x; mkdir -p dl
+            gh release download "${{ steps.upstream.outputs.tag }}" --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
+            IPA=$(pick)
+            [ -n "$IPA" ] || IPA=$(ls dl/*.ipa 2>/dev/null | head -1 || true)
+          fi
           [ -n "$IPA" ] || { echo "::error::no IPA in that release"; exit 1; }
           echo "using $IPA"
+          rm -rf x; mkdir -p x
           (cd x && unzip -q "../$IPA")
-          APP=$(ls -d "$PWD"/x/Payload/*.app | head -1)
+          APP=$(ls -d "$PWD"/x/Payload/*.app 2>/dev/null | head -1 || true)
           [ -n "$APP" ] || { echo "::error::the IPA has no Payload/*.app"; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
 
       - name: Build the touch overlay (libglfw.dylib)
         run: |
+          set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
             -dynamiclib -fobjc-arc -O2 -install_name @rpath/libglfw.dylib \
@@ -128,6 +130,7 @@ jobs:
 
       - name: Build the launcher executable
         run: |
+          set -euo pipefail
           brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
           mkdir -p HostApp/Frameworks HostApp/runtime
           cp -R "$APP/Frameworks/MetalANGLE.framework" HostApp/Frameworks/      # only linked against; the release copy stays in the IPA
@@ -137,7 +140,7 @@ jobs:
           (cd HostApp && xcodegen generate)
           xcodebuild -project HostApp/pziOS.xcodeproj -target pziOS -configuration Release -sdk iphoneos \
             SYMROOT="$PWD/build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            PZ_BUNDLE_ID=com.knt.pzios PZ_TEAM_ID="" PZ_DISPLAY_NAME=pziOS build | tail -5
+            PZ_BUNDLE_ID=com.knt.pzios PZ_TEAM_ID="" PZ_DISPLAY_NAME=pziOS build | tail -40
           ls -la build/Release-iphoneos/pziOS.app/pziOS
           find build/Release-iphoneos/pziOS.app -maxdepth 2 \( -name '*.lua' -o -name '*.args' \) -print
 
