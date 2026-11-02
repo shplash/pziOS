@@ -318,6 +318,7 @@ struct LauncherView: View {
     @StateObject private var pads = PadMonitor()
     @State private var showSettings = false
     @State private var showSetup = false
+    @State private var showLog = false
     @State private var showGCNotice = false
     /// 0 PLAY, 1 Settings, 2 Game Files, 3 Mods, 4 Setup guide (the tiles are a 2x2 grid under PLAY).
     @State private var focus = 0
@@ -326,6 +327,7 @@ struct LauncherView: View {
     @AppStorage("zom.jitMethod") private var jitMethod = 0
     @AppStorage("zom.heapLimit") private var heap = defaultHeapMode()
     @AppStorage("zom.virtualPad") private var virtualPad = false
+    @AppStorage("zom.analogMovement") private var analogMovement = false
     @AppStorage("zom.touchPresetName") private var touchPreset = ""
     @AppStorage("zom.padPresetName") private var padPreset = ""
     @State private var build = GameBuild.loaded()
@@ -396,6 +398,7 @@ struct LauncherView: View {
         .persistentSystemOverlays(.hidden)
         .fullScreenCover(isPresented: $showSettings, onDismiss: { pads.refresh() }) { SettingsView(model: model, pad: pad) }
         .fullScreenCover(isPresented: $showSetup, onDismiss: { build = GameBuild.loaded() }) { SetupView(model: model, pad: pad) }
+        .fullScreenCover(isPresented: $showLog) { LogSheet(text: model.log, file: logFile) }
         .alert("Garbage collector switched back", isPresented: $showGCNotice) {
             Button("OK") { UserDefaults.standard.set(false, forKey: "zom.gcReverted") }
         } message: { Text("That garbage collector didn't start on this device, so pziOS went back to the Parallel garbage collector. Close the app and open it again, then press Play. (The game's engine can only be started once per launch.)") }
@@ -492,6 +495,9 @@ struct LauncherView: View {
                 StatusRow(icon: "memorychip", title: "Memory", value: heapValue, tint: Theme.dim, m: m)
                 Divider().overlay(Color.white.opacity(0.07))
                 StatusRow(icon: "rectangle.3.group", title: "Layout", value: layoutValue, tint: Theme.dim, m: m)
+                Divider().overlay(Color.white.opacity(0.07))
+                StatusRow(icon: "arrow.up.and.down.and.arrow.left.and.right", title: "Movement",
+                          value: analogMovement ? "Analog stick" : "W/A/S/D keys", tint: Theme.dim, m: m)
             }
             .padding(.horizontal, m.v(12))
             .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(14)))
@@ -543,6 +549,15 @@ struct LauncherView: View {
                     Text("game files not installed").foregroundStyle(Theme.warning)
                 }
                 Spacer(minLength: 0)
+                Button { Haptics.tap(); showLog = true } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "doc.plaintext").font(.system(size: m.v(9), weight: .semibold))
+                        Text("Log")
+                    }
+                    .font(.system(size: m.v(10), weight: .semibold))
+                    .padding(.horizontal, m.v(8)).frame(height: m.v(22))
+                    .background(Color.white.opacity(0.10), in: Capsule())
+                }.buttonStyle(PressStyle())
                 if pad.active { Text("D-pad move · A select · B back").foregroundStyle(Theme.faint) }
             }
             .font(.system(size: m.v(10), weight: .medium))
@@ -563,6 +578,15 @@ struct LauncherView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: m.v(12)))
         .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(tint.opacity(0.22), lineWidth: 1))
+    }
+
+    /// This run's log, or the previous one when this run has not written anything yet (main.m rotates jvm.log at every start).
+    private var logFile: URL? {
+        let fm = FileManager.default
+        let current = GameFiles.documents.appendingPathComponent("jvm.log")
+        if fm.fileExists(atPath: current.path) { return current }
+        let last = GameFiles.documents.appendingPathComponent("jvm-last.log")
+        return fm.fileExists(atPath: last.path) ? last : nil
     }
 
     /// PLAY: straight into the game when the game files are there, otherwise into the setup guide.
@@ -1322,6 +1346,44 @@ private struct LogView: View {
         }
         .background(Color(white: 0.02), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+    }
+}
+
+/// The log from the home screen: readable, copyable and shareable without digging through Settings. Sharing the file is what a
+/// bug report needs, and the copy button is for pasting the last few lines into a message.
+private struct LogSheet: View {
+    let text: String
+    let file: URL?
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Log").font(.system(size: 22, weight: .bold))
+                    Text("This run, or the last one if the game has not started yet.").font(.system(size: 11)).foregroundStyle(Theme.dim)
+                }
+                Spacer(minLength: 8)
+                Button { UIPasteboard.general.string = text } label: {
+                    Image(systemName: "doc.on.doc").font(.system(size: 13, weight: .semibold))
+                        .frame(width: 34, height: 30).background(Color.white.opacity(0.10), in: Capsule())
+                }.buttonStyle(PressStyle())
+                if let file {
+                    ShareLink(item: file) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 13, weight: .semibold))
+                            .frame(width: 34, height: 30).background(Color.white.opacity(0.10), in: Capsule())
+                    }.buttonStyle(PressStyle())
+                }
+                Button { dismiss() } label: {
+                    Text("Done").font(.system(size: 13, weight: .semibold)).frame(width: 70, height: 30)
+                        .background(Theme.accent, in: Capsule()).foregroundStyle(.black)
+                }.buttonStyle(PressStyle())
+            }
+            .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 10)
+            LogView(text: text).padding(.horizontal, 16).padding(.bottom, 16)
+        }
+        .foregroundStyle(.white)
+        .background(Theme.base.ignoresSafeArea())
+        .preferredColorScheme(.dark)
     }
 }
 

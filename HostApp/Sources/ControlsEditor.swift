@@ -421,16 +421,32 @@ enum TouchLayoutStore {
         return icons(l)
     }
 
+    /// The default layout mirrored left to right, for a left-handed grip.
+    static var leftHandedLayout: TouchLayout {
+        var l = defaultLayout
+        for i in l.items.indices { l.items[i].x = 1 - l.items[i].x }
+        return l
+    }
+
+    /// The driving layout mirrored, steering under the right thumb, for a left-handed grip.
+    static var drivingLeftLayout: TouchLayout {
+        var l = drivingDefaultLayout
+        for i in l.items.indices { l.items[i].x = 1 - l.items[i].x }
+        return l
+    }
+
     /// The layouts the editor offers as starting points, tuned for different ways of holding the device.
     static var builtInPresets: [TouchPreset] {
-        [("default", "Default (improved)", defaultLayout), ("claw", "Claw", clawLayout), ("clawv", "Claw V", clawVLayout),
+        [("default", "Default (improved)", defaultLayout), ("left", "Left-handed", leftHandedLayout),
+         ("claw", "Claw", clawLayout), ("clawv", "Claw V", clawVLayout),
          ("pro", "Pro", proLayout), ("max", "Max", maxLayout), ("minimal", "Minimal", minimalLayout)]
             .map { TouchPreset(id: "builtin." + $0.0, name: $0.1, layout: $0.2) }
     }
 
-    /// The one starting point for the driving layout.
+    /// The starting points for the driving layout.
     static var drivingPresets: [TouchPreset] {
-        [TouchPreset(id: "builtin.driving.minimal", name: "Driving (minimal)", layout: drivingDefaultLayout)]
+        [TouchPreset(id: "builtin.driving.minimal", name: "Driving (minimal)", layout: drivingDefaultLayout),
+         TouchPreset(id: "builtin.driving.left", name: "Driving (left-handed)", layout: drivingLeftLayout)]
     }
 
     /// The default virtual gamepad (positions worked out for a 956x440 pt screen): sticks at the bottom corners, D-pad and A/B/X/Y between them,
@@ -553,12 +569,14 @@ enum ControlIcon {
             Entry(symbol: "scope", name: "Aim"),
             Entry(symbol: "hand.raised.fill", name: "Shove / push"),
             Entry(symbol: "hand.tap.fill", name: "Interact"),
+            Entry(symbol: "hand.point.up.left.fill", name: "Point / cursor"),
             Entry(symbol: "figure.run", name: "Run"),
-            Entry(symbol: "figure.walk", name: "Walk / crouch"),
+            Entry(symbol: "figure.walk", name: "Walk"),
+            Entry(symbol: "hare.fill", name: "Sprint"),
             Entry(symbol: "chevron.down.circle.fill", name: "Crouch (down)"),
             Entry(symbol: "arrow.triangle.2.circlepath", name: "Reload"),
             Entry(symbol: "arrow.up.forward.circle", name: "Rack"),
-            Entry(symbol: "bolt.fill", name: "Quick / energy"),
+            Entry(symbol: "arrow.uturn.left.circle.fill", name: "Cancel / back out"),
         ]),
         ("Driving", [
             Entry(symbol: "steeringwheel", name: "Steering wheel"),
@@ -570,6 +588,7 @@ enum ControlIcon {
             Entry(symbol: "speedometer", name: "Cruise control"),
             Entry(symbol: "headlight.high.beam.fill", name: "Headlights"),
             Entry(symbol: "car.fill", name: "Vehicle menu"),
+            Entry(symbol: "car.side.fill", name: "Get in / out"),
             Entry(symbol: "chair.fill", name: "Seat"),
             Entry(symbol: "speaker.wave.3.fill", name: "Horn"),
             Entry(symbol: "engine.combustion", name: "Engine"),
@@ -580,6 +599,8 @@ enum ControlIcon {
             Entry(symbol: "bag.fill", name: "Inventory"),
             Entry(symbol: "heart.fill", name: "Health"),
             Entry(symbol: "cross.case.fill", name: "First aid"),
+            Entry(symbol: "bandage.fill", name: "Bandage"),
+            Entry(symbol: "pills.fill", name: "Pills"),
             Entry(symbol: "map.fill", name: "Map"),
             Entry(symbol: "book.fill", name: "Info / skills"),
             Entry(symbol: "shield.fill", name: "Protection"),
@@ -587,6 +608,16 @@ enum ControlIcon {
             Entry(symbol: "lightbulb.fill", name: "Light"),
             Entry(symbol: "bubble.left.fill", name: "Chat"),
             Entry(symbol: "person.fill", name: "Character"),
+        ]),
+        ("Survival", [
+            Entry(symbol: "fork.knife", name: "Food"),
+            Entry(symbol: "drop.fill", name: "Water"),
+            Entry(symbol: "flame.fill", name: "Fire"),
+            Entry(symbol: "tent.fill", name: "Camp / sleep"),
+            Entry(symbol: "archivebox.fill", name: "Storage"),
+            Entry(symbol: "wrench.and.screwdriver.fill", name: "Repair"),
+            Entry(symbol: "leaf.fill", name: "Forage / farm"),
+            Entry(symbol: "pawprint.fill", name: "Animal"),
         ]),
         ("Menu", [
             Entry(symbol: "escape", name: "Escape"),
@@ -599,6 +630,7 @@ enum ControlIcon {
             Entry(symbol: "minus", name: "Minus"),
             Entry(symbol: "magnifyingglass", name: "Search"),
             Entry(symbol: "gear", name: "Settings"),
+            Entry(symbol: "speaker.slash.fill", name: "Mute"),
         ]),
         ("Time", [
             Entry(symbol: "pause.fill", name: "Pause"),

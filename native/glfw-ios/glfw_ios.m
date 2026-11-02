@@ -177,6 +177,7 @@ static BOOL pad_any_connected(void);
 static BOOL kbm_connected(void);
 static int pad_overlay_hides(void);
 static void pad_config_load(void);
+static NSString *read_trimmed(NSString *path);       // the vehicle marker / analog-binding marker reader, defined further down
 static Ev g_ev[4096];
 static int g_evHead, g_evTail;
 
@@ -306,6 +307,19 @@ static NSString *default_icon_for_key(int code) {
         case 70:  return @"lightbulb.fill";                  // F, light
         case 82:  return @"arrow.triangle.2.circlepath";     // R, reload
         case 88:  return @"arrow.up.forward.circle";         // X, rack
+        case 86:  return @"car.fill";                        // V, vehicle menu
+        case 78:  return @"engine.combustion";               // N, engine
+        case 79:  return @"thermometer.medium";              // O, heater
+        case 90:  return @"chair.fill";                      // Z, seat
+        case 81:  return @"speaker.wave.3.fill";             // Q, horn
+        case 84:  return @"bubble.left.fill";                // T, chat
+        case 71:  return @"shield.fill";                     // G, safety
+        case 74: case 76: return @"book.fill";               // J info, L skills
+        case 80:  return @"shield.fill";                     // P, protection
+        case 66:  return @"hammer.fill";                     // B, crafting
+        case 291: return @"pause.fill";                      // F2
+        case 292: return @"play.fill";                       // F3
+        case 293: case 294: case 295: return @"forward.fill";
         case 256: return @"escape";                          // Esc
         case 258: return @"arrow.right.to.line";             // Tab
         case 257: return @"return";                          // Enter
@@ -862,6 +876,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 @property (nonatomic) int sector;                   // the latched 8-way direction, -1 = none
 @property (nonatomic, strong) CAShapeLayer *originRing;
 - (void)updateRings;
+- (void)wakePad;
 @end
 @implementation ZOJoystick
 - (instancetype)initWithFrame:(CGRect)f {
@@ -930,6 +945,28 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.deadRing.position = c; self.pushRing.position = c; self.push2Ring.position = c;
     }
 }
+/// Project Zomboid only hands a controller to the player when A is pressed on it (its own activation gate). The game script
+/// usually does that binding itself and leaves a marker; when it did not, one short synthetic A press lets the game pick the
+/// virtual controller up, once per launch.
+- (void)wakePad {
+    static BOOL checked;
+    if (checked) return;
+    checked = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString *base = docs.count ? docs.firstObject : nil;
+        NSString *bound = base ? read_trimmed([base stringByAppendingPathComponent:@"home/Zomboid/Lua/pzios_analog_bound.txt"]) : nil;
+        if (bound.length && bound.integerValue != 0) {
+            glfwi_log("analog movement: the game script bound the virtual controller, no wake press needed");
+            return;
+        }
+        g_vpadButtons[0] = 1;
+        glfwi_log("analog movement: pressed A once so the game activates the virtual controller");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            g_vpadButtons[0] = 0;
+        });
+    });
+}
 - (void)set:(BOOL)v key:(int)key flag:(BOOL *)f { if (*f != v) { *f = v; push_key(key, v ? GLFW_PRESS : GLFW_RELEASE); } }
 - (void)setUp:(BOOL)up right:(BOOL)right down:(BOOL)down left:(BOOL)left {
     [self set:up key:self.keyUp flag:&_up];
@@ -992,6 +1029,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
             float ax = (float)ux * m, ay = (float)uy * m;
             vpad_set_stick_raw(ax, ay);
             vpad_note_analog(ax, ay);
+            if (travel >= 0.3) [self wakePad];          // a real push, not a thumb resting on the stick
         } else {
             vpad_set_stick_raw(0, 0);
         }

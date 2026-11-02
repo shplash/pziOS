@@ -372,3 +372,51 @@ do
     end)
     print("[pziOS] vehicle state reporting on")
 end
+
+
+-- -------------------------------------------------------------------------------------------------------------------------
+-- Analog movement: the on-screen movement stick can run on the "analog" engine, where it drives a virtual controller's left
+-- stick instead of W/A/S/D. Project Zomboid only reads a pad's axes once the pad is assigned to a player (its own
+-- JoyPadState.onGameStart calls setPlayerJoypad for a pad that was activated with A), so this does the same for the virtual
+-- controller. Without it the pad is connected and polled, but the character never reads it: exactly the "analog stick does
+-- nothing" report.
+-- The launcher writes 1 or 0 to Zomboid/Lua/pzios_analog.txt before the game starts.
+do
+    local tries, bound = 0, false
+
+    local function analogOn()
+        local r = getFileReader("pzios_analog.txt", false)
+        if not r then return false end
+        local line = r:readLine()
+        r:close()
+        return line ~= nil and line:match("^%s*1") ~= nil
+    end
+
+    local function bind()
+        if bound or not analogOn() then return true end
+        if not setPlayerJoypad or not getSpecificPlayer then return true end   -- an older build: nothing to bind with
+        local player = getSpecificPlayer(0)
+        if not player then return false end                                   -- no character yet; try again on a later tick
+        local ok = pcall(setPlayerJoypad, 0, 0, player, nil)                  -- joypad 0 = the virtual controller in slot 0
+        if ok and setPlayerMovementActive then pcall(setPlayerMovementActive, 0, true) end
+        if ok then
+            bound = true
+            print("[pziOS] analog stick: virtual controller bound to the player")
+            -- Tells the overlay that the game took the controller, so it does not have to send a synthetic A press.
+            local w = getFileWriter("pzios_analog_bound.txt", true, false)
+            if w then w:write("1"); w:close() end
+        else
+            print("[pziOS] analog stick: the game would not take the controller (setPlayerJoypad failed)")
+            bound = true                                                       -- do not spam the log every tick
+        end
+        return true
+    end
+
+    Events.OnTick.Add(function()
+        if bound or tries > 600 then return end                                  -- about 20 seconds of retries
+        tries = tries + 1
+        if tries % 15 == 0 then pcall(bind) end
+    end)
+    Events.OnGameStart.Add(function() tries, bound = 0, false; pcall(bind) end)
+    Events.OnMainMenuEnter.Add(function() tries, bound = 0, false end)
+end
