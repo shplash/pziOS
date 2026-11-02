@@ -262,6 +262,20 @@ static void vpad_set_stick_raw(float x, float y) {
     g_vpadAxes[0] = MAX(-1.0f, MIN(1.0f, x));
     g_vpadAxes[1] = MAX(-1.0f, MIN(1.0f, y));
 }
+/// The right stick while the analog movement engine is on: a vector from the middle of the screen to the touch cursor, so the
+/// game's controller aiming follows where the player is aiming on screen.
+static void vpad_feed_aim(CGPoint p, CGSize size) {
+    if (!vpad_sticks_pref() || vpad_active()) return;
+    CGFloat w = MAX(1, size.width), h = MAX(1, size.height);
+    float nx = (float)((p.x / w) * 2.0 - 1.0), ny = (float)((p.y / h) * 2.0 - 1.0);
+    float m = hypotf(nx, ny), dz = 0.15f;
+    if (m <= dz) { g_vpadAxes[2] = 0; g_vpadAxes[3] = 0; return; }
+    float k = (m - dz) / (1.0f - dz) / m;
+    g_vpadAxes[2] = MAX(-1.0f, MIN(1.0f, nx * k));
+    g_vpadAxes[3] = MAX(-1.0f, MIN(1.0f, ny * k));
+    static BOOL logged;
+    if (!logged) { logged = YES; glfwi_log("analog movement: aiming follows the touch cursor (right stick)"); }
+}
 /// One-shot log: the first time the game asks for the virtual pad's state. If this never appears in a log, Project
 /// Zomboid never polled the pad at all, which is a different problem from the axes being ignored.
 static void vpad_note_read(void) {
@@ -1266,6 +1280,9 @@ static void fps_note_frame(void) {
     self.cursorPt = p;
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.cursorLayer.position = p; [CATransaction commit];
     push_cursor(p.x * g_ptrScale, p.y * g_ptrScale);
+    // With the analog movement engine the game is in controller mode and aims with the pad's right stick. Feeding that stick
+    // from the touch cursor keeps the aim stick, drag-to-aim and tap aiming working instead of a frozen aim direction.
+    vpad_feed_aim(p, self.bounds.size);
 }
 - (void)clickAfter:(double)delay hold:(double)hold button:(int)b {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
