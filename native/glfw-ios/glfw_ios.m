@@ -1450,7 +1450,7 @@ static void fps_note_frame(void) {
     }
     [self updateFireToggles];
     [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
-    glfwi_log("fire mode: %s is now %s", (t.itemId ?: t.label ?: @"a button").UTF8String ?: "a button",
+    glfwi_log("fire mode: %s is now %s", t.itemId.UTF8String ?: "the button",
               next == 0 ? "held while pressed" : next == 2 ? "one press when the finger lifts" : "auto (re-pressed while held)");
 }
 /// The fire mode toggle's face: the mode of the button it changes, in that mode's word and colour, so a tap visibly does
