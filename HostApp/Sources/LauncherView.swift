@@ -519,7 +519,7 @@ struct LauncherView: View {
             HStack(spacing: m.v(10)) {
                 if model.running { ProgressView().tint(Color.black) }
                 else { Image(systemName: "play.fill").font(.system(size: m.v(15), weight: .bold)) }
-                Text(model.running ? "STARTING" : "PLAY").tracking(m.v(3))
+                Text(model.running ? "STARTING" : (ready ? "PLAY" : (installed ? "SET UP JIT" : "SET UP"))).tracking(m.v(3))
             }
             .font(.system(size: m.v(20), weight: .heavy))
             .frame(maxWidth: .infinity).frame(height: m.v(54))
@@ -589,8 +589,9 @@ struct LauncherView: View {
         return fm.fileExists(atPath: last.path) ? last : nil
     }
 
-    /// PLAY: straight into the game when the game files are there, otherwise into the setup guide.
-    private func play() { if GameFiles.installed { onRun(3) } else { showSetup = true } }
+    /// PLAY: straight into the game when the game files and JIT are ready, otherwise into the setup guide (which explains
+    /// exactly what is missing), so the button never fails silently.
+    private func play() { if GameFiles.installed && jitReady { onRun(3) } else { showSetup = true } }
     /// Game Files: the setup guide while the files are missing, afterwards a shortcut to the folder in the Files app.
     private func gameFiles() { if GameFiles.installed { FolderLink.open("game") } else { showSetup = true } }
 }
@@ -1364,8 +1365,8 @@ private struct LogSheet: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Log").font(.system(size: 22, weight: .bold))
-                    Text("This run, or the last one if the game has not started yet.").font(.system(size: 11)).foregroundStyle(Theme.dim)
+                    Text("Launcher log").font(.system(size: 22, weight: .bold))
+                    Text("What the launcher printed. Share sends the game's full jvm.log.").font(.system(size: 11)).foregroundStyle(Theme.dim)
                 }
                 Spacer(minLength: 8)
                 Button { UIPasteboard.general.string = text } label: {
