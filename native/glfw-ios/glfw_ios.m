@@ -177,7 +177,7 @@ static BOOL pad_any_connected(void);
 static BOOL kbm_connected(void);
 static int pad_overlay_hides(void);
 static void pad_config_load(void);
-static NSString *read_trimmed(NSString *path);       // the vehicle marker / analog-binding marker reader, defined further down
+static NSString *read_trimmed(NSString *path);       // the vehicle marker reader, defined further down
 static Ev g_ev[4096];
 static int g_evHead, g_evTail;
 
@@ -234,7 +234,6 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
 // slot would be shadowed, and the overlay must not treat the pad it is drawing as an external controller.
 #define VPAD_SLOT 0                            // joystick slot 0 while the virtual pad is on: games that only look at the first pad find it
 static int g_vpadOn = -1;
-static BOOL g_vpadNeeded;                      // a movement stick asked for the analog engine, so the game needs to see the pad
 static unsigned char g_vpadButtons[15];
 static float g_vpadAxes[6];                    // LX, LY, RX, RY, LT, RT (triggers rest at -1, as in GLFW)
 static void vpad_init(void) {
@@ -245,16 +244,8 @@ static void vpad_init(void) {
 }
 /// The Virtual Gamepad setting, which also selects the gamepad layout.
 static int vpad_active(void) { vpad_init(); return g_vpadOn; }
-/// A movement stick on the analog engine needs the game to see a pad too. The touch editor writes this pref whenever a
-/// layout is saved, so it is already right by the time the game starts polling controllers.
-static BOOL vpad_sticks_pref(void) {
-    static int v = -1;
-    if (v < 0) v = [NSUserDefaults.standardUserDefaults boolForKey:@"zom.analogMovement"] ? 1 : 0;
-    return v == 1;
-}
-/// Whether a virtual pad exists at all, for the game and for GLFW's joystick API: the whole gamepad mode, or just the
-/// left stick an analog movement stick drives.
-static int vpad_present(void) { vpad_init(); return (g_vpadOn || g_vpadNeeded || vpad_sticks_pref()) ? 1 : 0; }
+/// Whether a virtual pad exists at all, for the game and for GLFW's joystick API.
+static int vpad_present(void) { vpad_init(); return g_vpadOn ? 1 : 0; }
 static void vpad_set_button(int i, BOOL down) { if (i >= 0 && i < 15) g_vpadButtons[i] = down ? 1 : 0; }
 static void vpad_set_trigger(int i, BOOL down) { if (i >= 0 && i < 2) g_vpadAxes[4 + i] = down ? 1.0f : -1.0f; }
 static void vpad_set_stick(int stick, float x, float y) {
@@ -266,40 +257,13 @@ static void vpad_set_stick(int stick, float x, float y) {
     g_vpadAxes[i] = MAX(-1.0f, MIN(1.0f, x * k));
     g_vpadAxes[i + 1] = MAX(-1.0f, MIN(1.0f, y * k));
 }
-/// Writes the left stick exactly as given (the analog movement stick removes its own dead zone), in GLFW's order: x
-/// right, y down.
-static void vpad_set_stick_raw(float x, float y) {
-    g_vpadAxes[0] = MAX(-1.0f, MIN(1.0f, x));
-    g_vpadAxes[1] = MAX(-1.0f, MIN(1.0f, y));
-}
-/// The right stick while the analog movement engine is on: a vector from the middle of the screen to the touch cursor, so the
-/// game's controller aiming follows where the player is aiming on screen.
-static void vpad_feed_aim(CGPoint p, CGSize size) {
-    if (!vpad_sticks_pref() || vpad_active()) return;
-    CGFloat w = MAX(1, size.width), h = MAX(1, size.height);
-    float nx = (float)((p.x / w) * 2.0 - 1.0), ny = (float)((p.y / h) * 2.0 - 1.0);
-    float m = hypotf(nx, ny), dz = 0.15f;
-    if (m <= dz) { g_vpadAxes[2] = 0; g_vpadAxes[3] = 0; return; }
-    float k = (m - dz) / (1.0f - dz) / m;
-    g_vpadAxes[2] = MAX(-1.0f, MIN(1.0f, nx * k));
-    g_vpadAxes[3] = MAX(-1.0f, MIN(1.0f, ny * k));
-    static BOOL logged;
-    if (!logged) { logged = YES; glfwi_log("analog movement: aiming follows the touch cursor (right stick)"); }
-}
 /// One-shot log: the first time the game asks for the virtual pad's state. If this never appears in a log, Project
-/// Zomboid never polled the pad at all, which is a different problem from the axes being ignored.
+/// Zomboid never polled the pad at all, which is a different problem from the pad's buttons being ignored.
 static void vpad_note_read(void) {
     static BOOL logged;
     if (logged) return;
     logged = YES;
     glfwi_log("virtual pad: the game read joystick slot %d (controller support is on)", VPAD_SLOT);
-}
-/// One-shot log of the first analog vector, so a log can tell whether the movement stick reached the pad.
-static void vpad_note_analog(float x, float y) {
-    static BOOL logged;
-    if (logged) return;
-    logged = YES;
-    glfwi_log("analog movement: sending left stick %.2f, %.2f to the game", x, y);
 }
 
 // Icons for the on-screen controls. The touch editor writes an "icon" name (an SF Symbol) for each control and each
@@ -939,13 +903,12 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
 @property (nonatomic) CGFloat push2At;           // 0.5...1.5
 @property (nonatomic) int keyUp, keyLeft, keyDown, keyRight;
 @property (nonatomic) BOOL pushing, pushing2;
-@property (nonatomic) BOOL padStick;                // analog engine: send the vector to the virtual controller's left stick instead of WASD
 @property (nonatomic) BOOL tracking;                // a thumb is on the stick
 @property (nonatomic) CGPoint origin;               // where that thumb landed: the stick floats under it
 @property (nonatomic) int sector;                   // the latched 8-way direction, -1 = none
+@property (nonatomic) int appliedSec;               // the direction whose keys are held now, for the haptic click
 @property (nonatomic, strong) CAShapeLayer *originRing;
 - (void)updateRings;
-- (void)wakePad;
 @end
 @implementation ZOJoystick
 - (instancetype)initWithFrame:(CGRect)f {
@@ -953,16 +916,18 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.multipleTouchEnabled = YES;
         self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.35];
         self.layer.cornerRadius = f.size.width / 2; self.layer.borderWidth = 2; self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.5].CGColor;
-        CGFloat t = f.size.width * 0.38;
+        CGFloat t = f.size.width * 0.44;
         self.thumb = [CAShapeLayer layer];
         self.thumb.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-t / 2, -t / 2, t, t)].CGPath;
         self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
         self.thumb.position = CGPointMake(f.size.width / 2, f.size.height / 2);
+        self.thumb.shadowColor = UIColor.black.CGColor; self.thumb.shadowOpacity = 0.35;
+        self.thumb.shadowRadius = 3; self.thumb.shadowOffset = CGSizeMake(0, 1);
         [self.layer addSublayer:self.thumb];
         self.deadZone = 0.18; self.pushKey = 340; self.pushAt = 0.85;      // run from 85%...
         self.pushKey2 = 342; self.push2At = 1.15;                          // ...and sprint once pushed past the rim
         self.keyUp = 87; self.keyLeft = 65; self.keyDown = 83; self.keyRight = 68;
-        self.sector = -1; self.origin = CGPointMake(f.size.width / 2, f.size.height / 2);
+        self.sector = -1; self.appliedSec = -1; self.origin = CGPointMake(f.size.width / 2, f.size.height / 2);
         // A small dashed ring marks where the thumb landed: the stick is floating, so that spot is its centre until it
         // is let go.
         self.originRing = [CAShapeLayer layer];
@@ -1005,40 +970,12 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGFloat p1 = MAX(0.3, MIN(1.5, self.pushAt));
     CGFloat p2 = MAX(0.5, MIN(1.5, self.push2At));
     self.deadRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * dz / 2, -size * dz / 2, size * dz, size * dz)].CGPath;
-    self.pushRing.hidden = self.padStick;                    // the analog engine has no Run/Sprint stages to show
     self.pushRing.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * p1 / 2, -size * p1 / 2, size * p1, size * p1)].CGPath;
-    self.push2Ring.hidden = self.padStick || (self.pushKey2 == 0 || self.pushKey2 == self.pushKey || p2 <= p1 + 0.05);
+    self.push2Ring.hidden = (self.pushKey2 == 0 || self.pushKey2 == self.pushKey || p2 <= p1 + 0.05);
     self.push2Ring.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-size * p2 / 2, -size * p2 / 2, size * p2, size * p2)].CGPath;
     if (!self.tracking) {
         self.deadRing.position = c; self.pushRing.position = c; self.push2Ring.position = c;
     }
-}
-/// Project Zomboid only hands a controller to the player when A is pressed on it (its own activation gate). The game script
-/// usually does that binding itself and leaves a marker; when it did not, one short synthetic A press lets the game pick the
-/// virtual controller up, once per launch.
-- (void)wakePad {
-    static BOOL checked;
-    if (checked) return;
-    checked = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-        NSString *base = docs.count ? docs.firstObject : nil;
-        NSString *bound = base ? read_trimmed([base stringByAppendingPathComponent:@"home/Zomboid/Lua/pzios_analog_bound.txt"]) : nil;
-        if (bound.length && bound.integerValue != 0) {
-            glfwi_log("analog movement: the game script bound the virtual controller, no wake press needed");
-            return;
-        }
-        id wake = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.analogWake"];
-        if (wake && ![wake boolValue]) {
-            glfwi_log("analog movement: wake press is off, leaving activation to the game");
-            return;
-        }
-        g_vpadButtons[0] = 1;
-        glfwi_log("analog movement: pressed A once so the game activates the virtual controller");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            g_vpadButtons[0] = 0;
-        });
-    });
 }
 - (void)set:(BOOL)v key:(int)key flag:(BOOL *)f { if (*f != v) { *f = v; push_key(key, v ? GLFW_PRESS : GLFW_RELEASE); } }
 - (void)setUp:(BOOL)up right:(BOOL)right down:(BOOL)down left:(BOOL)left {
@@ -1055,7 +992,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGFloat dx = p.x - o.x, dy = p.y - o.y, len = hypot(dx, dy);
     CGFloat mag = r > 0 ? len / r : 0;                                       // keeps counting past the rim, up to ~1.5+
     CGFloat vis = (len > r && len > 0) ? r / len : 1;                        // the thumb itself stays on the rim
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    [CATransaction begin]; [CATransaction setAnimationDuration:0.045];          // a hair of smoothing, so the thumb glides
     CGFloat size = self.bounds.size.width;
     CGPoint tp = CGPointMake(o.x + dx * vis, o.y + dy * vis);
     tp.x = MAX(8, MIN(size - 8, tp.x)); tp.y = MAX(8, MIN(size - 8, tp.y));   // the thumb stays within the control
@@ -1065,13 +1002,14 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     [CATransaction commit];
 
     CGFloat dz = MAX(0.02, MIN(0.60, self.deadZone));
-    CGFloat travel = mag <= dz ? 0 : MIN(1.5, (mag - dz) / MAX(0.0001, 1 - dz));   // 1.5 = dragged well past the rim
-    CGFloat ux = len > 0 ? dx / len : 0, uy = len > 0 ? dy / len : 0;              // unit direction
+    // Full speed at 92% of the radius, not at the rim: a thumb that stays inside the button still walks, which is most of
+    // what makes the stick feel responsive instead of sluggish. Past that it keeps counting, up to 1.5 for the Sprint stage.
+    CGFloat travel = mag <= dz ? 0 : MIN(1.5, (mag - dz) / MAX(0.0001, 0.92 - dz));
 
     // One latched direction for all four keys: a thumb resting on a diagonal boundary would otherwise flicker between one
     // key and two. The sector only changes once the thumb is a few degrees past that boundary, and is dropped only when
     // the thumb comes back to the middle.
-    BOOL engaged = travel >= ((self.up || self.down || self.left || self.right) ? 0.12 : 0.18);
+    BOOL engaged = travel >= ((self.up || self.down || self.left || self.right) ? 0.06 : 0.10);
     if (!engaged) {
         self.sector = -1;
     } else {
@@ -1080,43 +1018,21 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         double units = a / 45.0, d = units - self.sector;
         if (d > 4) units -= 8;                            // the -180/+180 seam must not send it round the houses
         if (d < -4) units += 8;
-        double h = 0.14;                                  // ~6 degrees of stickiness at a boundary
+        double h = 0.18;                                  // ~8 degrees of hold, so a thumb on a diagonal doesn't flicker
         while (units - self.sector > 0.5 + h) self.sector++;
         while (units - self.sector < -0.5 - h) self.sector--;
     }
     int sec = self.sector < 0 ? -1 : ((self.sector % 8) + 8) % 8;   // 0 right, 2 down, 4 left, 6 up
-
-    if (self.padStick) {
-        // Analog engine: the game gets a controller's left stick, with a speed that follows how far it is pushed, sent
-        // from the first bit of travel. The direction keys are still sent as a safety net, so walking works even if the
-        // game has not taken the controller (controller support off, or this build does not map it); in controller mode
-        // the game ignores them.
-        if (sec < 0) {
-            [self setUp:NO right:NO down:NO left:NO];
-        } else {
-            [self setUp:(sec >= 5) right:(sec == 7 || sec == 0 || sec == 1)
-                   down:(sec >= 1 && sec <= 3) left:(sec >= 3 && sec <= 5)];
-        }
-        if (travel > 0.02) {
-            float m = (float)MIN(1.0, travel);
-            float ax = (float)ux * m, ay = (float)uy * m;
-            vpad_set_stick_raw(ax, ay);
-            vpad_note_analog(ax, ay);
-            if (travel >= 0.3) [self wakePad];          // a real push, not a thumb resting on the stick
-        } else {
-            vpad_set_stick_raw(0, 0);
-        }
-    } else if (sec < 0) {
-        [self setUp:NO right:NO down:NO left:NO];
-    } else {
-        [self setUp:(sec >= 5) right:(sec == 7 || sec == 0 || sec == 1)
-               down:(sec >= 1 && sec <= 3) left:(sec >= 3 && sec <= 5)];
+    [self setUp:(sec >= 5) right:(sec == 7 || sec == 0 || sec == 1)
+           down:(sec >= 1 && sec <= 3) left:(sec >= 3 && sec <= 5)];
+    if (sec != self.appliedSec) {                         // a click as a direction engages or changes
+        if (sec >= 0) [[[UIImpactFeedbackGenerator alloc] init] impactOccurred];
+        self.appliedSec = sec;
     }
 
-    // First stage: Run (or Sprint, or any key) from pushAt on. Second stage: another key once pushed past the rim. The
-    // analog engine leaves running to the game's own controller scheme, where speed already follows the stick.
+    // First stage: Run (or Sprint, or any key) from pushAt on. Second stage: another key once pushed past the rim.
     CGFloat at = MAX(0.3, MIN(1.5, self.pushAt));
-    if (self.pushKey != 0 && !self.padStick) {
+    if (self.pushKey != 0) {
         BOOL want = travel >= (self.pushing ? at - 0.12 : at);
         if (want != self.pushing) {
             self.pushing = want;
@@ -1125,7 +1041,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         }
     }
     CGFloat at2 = MAX(0.5, MIN(1.5, self.push2At));
-    if (self.pushKey2 != 0 && self.pushKey2 != self.pushKey && at2 > at + 0.05 && !self.padStick) {
+    if (self.pushKey2 != 0 && self.pushKey2 != self.pushKey && at2 > at + 0.05) {
         BOOL want2 = travel >= (self.pushing2 ? at2 - 0.12 : at2);
         if (want2 != self.pushing2) {
             self.pushing2 = want2;
@@ -1136,7 +1052,6 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     self.thumb.fillColor = (self.pushing2 ? [UIColor colorWithRed:1 green:0.58 blue:0.35 alpha:0.8]
                            : self.pushing ? [UIColor colorWithRed:1 green:0.85 blue:0.45 alpha:0.75]
-                           : self.padStick ? [UIColor colorWithRed:0.55 green:0.8 blue:1 alpha:0.75]
                            : [UIColor colorWithWhite:1 alpha:0.55]).CGColor;
     [CATransaction commit];
 }
@@ -1144,12 +1059,11 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     [self setUp:NO right:NO down:NO left:NO];
     if (self.pushing) { self.pushing = NO; if (self.pushKey) push_key(self.pushKey, GLFW_RELEASE); }
     if (self.pushing2) { self.pushing2 = NO; if (self.pushKey2) push_key(self.pushKey2, GLFW_RELEASE); }
-    if (self.padStick) vpad_set_stick_raw(0, 0);
-    self.tracking = NO; self.sector = -1;
+    self.tracking = NO; self.sector = -1; self.appliedSec = -1;
     CGFloat r = self.bounds.size.width / 2;
     self.origin = CGPointMake(r, r);
     self.originRing.hidden = YES;
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    [CATransaction begin]; [CATransaction setAnimationDuration:0.12];
     self.thumb.position = CGPointMake(r, r);
     self.deadRing.position = self.origin; self.pushRing.position = self.origin; self.push2Ring.position = self.origin;
     self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
@@ -1161,7 +1075,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
     CGPoint c = CGPointMake(r, r), p = [t locationInView:self];
     CGFloat dx = p.x - c.x, dy = p.y - c.y, len = hypot(dx, dy), keep = r * 0.9;
     if (len > keep && len > 0) p = CGPointMake(c.x + dx / len * keep, c.y + dy / len * keep);   // start just inside the rim
-    self.origin = p; self.sector = -1; self.tracking = YES;
+    self.origin = p; self.sector = -1; self.appliedSec = -1; self.tracking = YES;
     self.originRing.hidden = NO;
     [self update:t];
 }
@@ -1334,9 +1248,6 @@ static void fps_note_frame(void) {
     self.cursorPt = p;
     [CATransaction begin]; [CATransaction setDisableActions:YES]; self.cursorLayer.position = p; [CATransaction commit];
     push_cursor(p.x * g_ptrScale, p.y * g_ptrScale);
-    // With the analog movement engine the game is in controller mode and aims with the pad's right stick. Feeding that stick
-    // from the touch cursor keeps the aim stick, drag-to-aim and tap aiming working instead of a frozen aim direction.
-    vpad_feed_aim(p, self.bounds.size);
 }
 - (void)clickAfter:(double)delay hold:(double)hold button:(int)b {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1597,13 +1508,6 @@ static void fps_note_frame(void) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
             id dz = it[@"stickDead"], pk = it[@"stickPushKey"], pa = it[@"stickPushAt"], ks = it[@"stickArrows"];
             id pk2 = it[@"stickPush2Key"], pa2 = it[@"stickPush2At"];
-            // "pad" = the analog engine: the stick drives the virtual controller's left stick instead of WASD.
-            j.padStick = [it[@"stickEngine"] isKindOfClass:NSString.class] && [it[@"stickEngine"] isEqualToString:@"pad"];
-            if (j.padStick) {
-                g_vpadNeeded = YES;
-                static BOOL loggedAnalog;
-                if (!loggedAnalog) { loggedAnalog = YES; glfwi_log("movement stick: analog engine (the game gets a virtual controller's left stick)"); }
-            }
             j.deadZone = [dz respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(0.55, [dz doubleValue])) : 0.18;
             j.pushKey = [pk respondsToSelector:@selector(intValue)] ? [pk intValue] : 340;      // Shift: run from pushAt on
             j.pushAt = [pa respondsToSelector:@selector(doubleValue)] ? MAX(0.3, MIN(1.5, [pa doubleValue])) : 0.85;
@@ -2435,8 +2339,7 @@ GLFW_API const char *glfwGetJoystickName(int j) {
 }
 GLFW_API const char *glfwGetJoystickGUID(int j) {
     // A real Xbox 360 (XInput) GUID. Project Zomboid and mods map controllers from a fixed table keyed by GUID, so an
-    // invented one made the virtual pad connected but unmapped: their axes were never read, which is why the analog
-    // movement stick moved nothing. This identity is in every standard controller table.
+    // invented one made the virtual pad connected but unmapped. This identity is in every standard controller table.
     if (j == VPAD_SLOT) return vpad_present() ? "030000005e0400008e02000014010000" : NULL;
     GCController *p = pad_for(j); if (!p) return NULL;
     NSUInteger h = [(p.vendorName ?: @"Game Controller") hash];

@@ -31,7 +31,6 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var stickPushKey: Int? = nil     // key held at full push: 340 run, 342 sprint, 0 never (nil = Shift)
     var stickPushAt: Double? = nil   // how far it must be pushed for that, 0.5...1.0 (nil = 0.85)
     var stickArrows: Bool? = nil     // send the arrow keys instead of WASD
-    var stickEngine: String? = nil   // movement stick: nil/"keys" sends W/A/S/D; "pad" drives a virtual controller's left stick (analog, 360°)
     var stickPush2Key: Int? = nil    // second stage at stickPush2At, meant for pushing past the rim (342 = sprint, nil = Alt)
     var stickPush2At: Double? = nil  // 0.5...1.5; values over 1 need the thumb dragged past the stick's edge
     /// SF Symbol drawn on the control instead of its text (nil = the overlay's default for that key, or text).
@@ -208,16 +207,6 @@ enum TouchLayoutStore {
     private static func forgetInGameModes() {
         UserDefaults.standard.removeObject(forKey: "zom.fireModes")
         UserDefaults.standard.removeObject(forKey: "zom.fireModeBase")
-    }
-    /// Puts every movement stick on the same engine: nil/"keys" sends W/A/S/D (or the arrow keys), "pad" drives a virtual
-    /// controller's left stick for analog, 360° walking. Both touch layouts are saved, along with the flag the overlay reads.
-    static func setStickEngine(_ engine: String?) {
-        for driving in [false, true] {
-            var l = load(driving: driving)
-            for i in l.items.indices where l.items[i].kind == .stick { l.items[i].stickEngine = engine }
-            save(l, driving: driving)
-        }
-        UserDefaults.standard.set(engine == "pad", forKey: "zom.analogMovement")
     }
     static func reset() { UserDefaults.standard.removeObject(forKey: key); forgetInGameModes() }
 
@@ -501,9 +490,6 @@ enum TouchLayoutStore {
             saveDriving(drivingDefaultLayout)
             d.set(2, forKey: drivingVersionKey)
         } else if d.string(forKey: drivingKey) == nil { saveDriving(drivingDefaultLayout) }
-        // Keep the overlay's "present a virtual controller" flag in step with the saved layouts.
-        let analog = (load().items + loadDriving().items).contains { $0.kind == .stick && $0.stickEngine == "pad" }
-        d.set(analog, forKey: "zom.analogMovement")
         if d.string(forKey: key) == nil { save(defaultLayout); d.set(true, forKey: migratedKey); return }
         guard !d.bool(forKey: migratedKey) else { return }
         var l = load()
@@ -772,16 +758,7 @@ struct TouchLayoutEditor: View {
     }
 
     /// Saves the layout being edited, to the place its mode uses.
-    private func persist() { TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); syncAnalogEngine() }
-
-    /// The overlay only presents a virtual controller while some movement stick uses the analog engine. Written as
-    /// zom.analogMovement, which glfw_ios.m reads when the game asks GLFW for joysticks (see vpad_present).
-    private func syncAnalogEngine() {
-        guard !pad else { return }              // the gamepad layout has its own sticks, not movement sticks
-        let other = TouchLayoutStore.load(driving: !slotDriving).items
-        let on = (layout.items + other).contains { $0.kind == .stick && $0.stickEngine == "pad" }
-        UserDefaults.standard.set(on, forKey: "zom.analogMovement")
-    }
+    private func persist() { TouchLayoutStore.save(layout, pad: pad, driving: slotDriving) }
 
     /// Switches between editing the on-foot and the driving layout.
     private func switchSlot() {
@@ -791,7 +768,6 @@ struct TouchLayoutEditor: View {
         presets = TouchPresetStore.load(pad: pad, driving: slotDriving)
         currentPreset = TouchPresetStore.activeName(pad: pad, driving: slotDriving)
         selected = nil
-        syncAnalogEngine()
     }
 
     var body: some View {
@@ -861,7 +837,7 @@ struct TouchLayoutEditor: View {
         .persistentSystemOverlays(.hidden)
         .onChange(of: layout) { _, l in      // debounced: encoding on every frame of a drag made the editor sluggish
             saveItem?.cancel()
-            let work = DispatchWorkItem { TouchLayoutStore.save(l, pad: pad, driving: slotDriving); syncAnalogEngine() }
+            let work = DispatchWorkItem { TouchLayoutStore.save(l, pad: pad, driving: slotDriving) }
             saveItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
             // Changing a control leaves the saved layout behind, so the name only stays while it still describes the layout.
@@ -873,12 +849,11 @@ struct TouchLayoutEditor: View {
                 TouchPresetStore.setActiveName("", pad: pad, driving: slotDriving)
             }
         }
-        .onDisappear { saveItem?.cancel(); hideForDrag = false; TouchLayoutStore.save(layout, pad: pad, driving: slotDriving); syncAnalogEngine() }
+        .onDisappear { saveItem?.cancel(); hideForDrag = false; TouchLayoutStore.save(layout, pad: pad, driving: slotDriving) }
         .onAppear {
             presets = TouchPresetStore.load(pad: pad, driving: slotDriving)
             currentPreset = TouchPresetStore.activeName(pad: pad, driving: slotDriving)
             updateGuides()
-            syncAnalogEngine()
         }
         .onChange(of: uiMargin) { _, _ in updateGuides() }
         .alert("Save layout", isPresented: $naming) {
@@ -1308,28 +1283,12 @@ struct TouchLayoutEditor: View {
                         Text("WASD").tag(0); Text("Arrows").tag(1)
                     }.pickerStyle(.segmented)
                 }
-                // What the stick actually sends. Keys is the game's own keyboard movement (eight directions, one speed);
-                // Analog hands the thumb to a virtual controller's left stick (360°, speed follows the push).
-                row("Engine") {
-                    Picker("", selection: Binding(get: { layout.items[i].stickEngine ?? "keys" },
-                                                  set: { v in
-                        layout.items[i].stickEngine = v == "pad" ? "pad" : nil
-                        syncAnalogEngine()
-                    })) {
-                        Text("Keys").tag("keys"); Text("Analog").tag("pad")
-                    }.pickerStyle(.segmented)
-                }
-                if (layout.items[i].stickEngine ?? "keys") == "pad" {
-                    Text("Analog sends the stick to a virtual controller: 360° movement, with the speed following the push. pziOS binds it to your character, and Project Zomboid then uses its controller aiming (the right stick) rather than the mouse. If you want mouse aim back, switch to Keys. Applies on the next start.")
-                        .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
-                        .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                }
+                // What the stick sends: the game's own keyboard movement, eight directions, with mouse aim.
                 row("Dead zone", value: String(format: "%.0f%%", (item.stickDead ?? 0.18) * 100)) {
                     Slider(value: Binding(get: { layout.items[i].stickDead ?? 0.18 },
                                           set: { v in layout.items[i].stickDead = abs(v - 0.18) < 0.005 ? nil : v }),
                            in: 0.05...0.5, step: 0.01).tint(.white)
                 }
-                if (layout.items[i].stickEngine ?? "keys") != "pad" {
                 row("Full push") {
                     Menu {
                         Button("Off") { layout.items[i].stickPushKey = 0 }
@@ -1375,7 +1334,6 @@ struct TouchLayoutEditor: View {
                 Text("Sends W/A/S/D (or the arrows) with a dead zone and a locked direction. Push past the first mark to Run, and past the rim to Sprint. Shift+W is cruise control in a vehicle, so turn the stages off when you drive.")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                }
     }
 
     @ViewBuilder private func keyRows(_ i: Int, _ item: TouchItem) -> some View {

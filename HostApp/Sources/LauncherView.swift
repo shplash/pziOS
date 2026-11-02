@@ -327,7 +327,6 @@ struct LauncherView: View {
     @AppStorage("zom.jitMethod") private var jitMethod = 0
     @AppStorage("zom.heapLimit") private var heap = defaultHeapMode()
     @AppStorage("zom.virtualPad") private var virtualPad = false
-    @AppStorage("zom.analogMovement") private var analogMovement = false
     @AppStorage("zom.touchPresetName") private var touchPreset = ""
     @AppStorage("zom.padPresetName") private var padPreset = ""
     @State private var build = GameBuild.loaded()
@@ -495,9 +494,6 @@ struct LauncherView: View {
                 StatusRow(icon: "memorychip", title: "Memory", value: heapValue, tint: Theme.dim, m: m)
                 Divider().overlay(Color.white.opacity(0.07))
                 StatusRow(icon: "rectangle.3.group", title: "Layout", value: layoutValue, tint: Theme.dim, m: m)
-                Divider().overlay(Color.white.opacity(0.07))
-                StatusRow(icon: "arrow.up.and.down.and.arrow.left.and.right", title: "Movement",
-                          value: analogMovement ? "Analog stick" : "W/A/S/D keys", tint: Theme.dim, m: m)
             }
             .padding(.horizontal, m.v(12))
             .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(14)))
@@ -537,7 +533,7 @@ struct LauncherView: View {
 
     private func bottomBar(_ m: Metrics) -> some View {
         VStack(spacing: m.v(3)) {
-            ThinkingLine(words: words, active: model.running, m: m)
+            if model.running { ThinkingLine(words: words, active: true, m: m) }   // no blank strip while the launcher is idle
             HStack(spacing: m.v(6)) {
                 Text(versionText)
                 Text("·").foregroundStyle(Theme.faint)
@@ -611,7 +607,7 @@ private struct StatusRow: View {
             Text(value).font(.system(size: m.v(12), weight: .semibold)).foregroundStyle(tint)
                 .lineLimit(1).minimumScaleFactor(0.7)
         }
-        .frame(height: m.v(30))
+        .frame(height: m.v(32))
     }
 }
 
@@ -638,9 +634,9 @@ private struct TileButton: View {
             }
             .padding(.horizontal, m.v(10))
             .frame(maxWidth: .infinity, alignment: .leading).frame(height: m.v(52))
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(12)))
-            .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(Color.white.opacity(0.08), lineWidth: 1))
-            .overlay(RoundedRectangle(cornerRadius: m.v(12)).stroke(Theme.accent, lineWidth: focused ? 2 : 0).padding(-3))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: m.v(14)))
+            .overlay(RoundedRectangle(cornerRadius: m.v(14)).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: m.v(14)).stroke(Theme.accent, lineWidth: focused ? 2 : 0).padding(-3))
         }
         .buttonStyle(PressStyle())
         .disabled(disabled)
@@ -775,8 +771,6 @@ struct SettingsView: View {
     @AppStorage("zom.virtualPad") private var virtualPad = false          // on-screen controls act as a game controller instead of keyboard and mouse
     @AppStorage("zom.touchIcons") private var touchIcons = true            // SF Symbols on the on-screen controls instead of text
     @AppStorage("zom.drivingAuto") private var drivingAuto = true          // switch to the driving layout while in a vehicle
-    @AppStorage("zom.analogMovement") private var analogMovement = false   // movement sticks drive a virtual controller's left stick instead of WASD
-    @AppStorage("zom.analogWake") private var analogWake = true            // let the overlay press A once if the game script could not bind the pad
     @AppStorage("zom.ramDonorHeap") private var ramDonorHeap = false      // experimental: Java heap in memory held by the donor extension
     @AppStorage("zom.twoFingerZoom") private var twoFingerZoom = true       // two-finger scroll on empty screen (the game's zoom)
     @AppStorage("zom.zinkBackend") private var zinkBackend = false      // experimental: run the game on Mesa Zink + MoltenVK (OpenGL 4.5)
@@ -942,17 +936,9 @@ struct SettingsView: View {
                     detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
                                        : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own. Presets (Default, Left-handed, Claw, Claw V, Pro, Max, Minimal) are a quick start, and the editor shows the safe area and the game's UI margins so controls land exactly where you put them."),
             ] + (virtualPad ? [] : [
-                Row(id: "stickengine", title: "Movement Engine", kind: .choice(["Keys", "Analog"], Binding(get: { analogMovement ? 1 : 0 },
-                        set: { v in analogMovement = v == 1; TouchLayoutStore.setStickEngine(v == 1 ? "pad" : nil) })), group: "Layout",
-                    detail: analogMovement ? "Analog: the stick drives a virtual controller's left stick, for 360° movement with the speed following the push. pziOS binds that controller to your character; Project Zomboid then aims with the controller (right stick) rather than the mouse. W/A/S/D are still sent as a fallback. Applies on the next start."
-                                         : "Keys: the stick sends W/A/S/D (or the arrows), the game's own keyboard movement, with mouse aim. Switch to Analog for a 360° stick. Applies on the next start."),
                 Row(id: "drivingedit", title: "Edit driving layout", kind: .action(destructive: false) { editor = .driving }, group: "Layout",
                     detail: "The layout the game switches to in a vehicle: steering arrows, gas, brake, a handbrake that latches and Shift+W/Shift+S cruise control. Also reachable from the On foot / Driving switch in the editor."),
-            ]) + (analogMovement ? [
-                Row(id: "analogwake", title: "Wake with A", kind: .toggle($analogWake),
-                    detail: analogWake ? "On: if the game script could not hand the virtual controller to your character, pziOS presses A once so Project Zomboid picks it up. That press can trigger one interact. Off: never send it."
-                                       : "Off: pziOS never sends that press; if the game script could not bind the controller, the stick falls back to W/A/S/D until you press A on a controller yourself."),
-            ] : []) + [
+            ]) + [
                 Row(id: "ctrlstatus", title: controllerStatus, kind: .info, group: "Real controller"),
                 Row(id: "deadzone", title: "Stick deadzone", kind: .slider(0...0.95, deadZoneBinding, String(format: "%.0f%%", controllerConfig.deadZone * 100)),
                     detail: "How far a stick must move before the game sees it. Raise it if your character drifts with the sticks at rest."),

@@ -171,14 +171,8 @@ static void install_ui_margin(NSString *docs, NSString *res) {
     [fm createDirectoryAtPath:luaDir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *line = [NSString stringWithFormat:@"%d %d %d %d\n", m[0], m[1], m[2], m[3]];
     [line writeToFile:[luaDir stringByAppendingPathComponent:@"pzios_ui_margin.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    // The analog movement stick: the Lua side reads this and binds the virtual controller to the player, which is what makes
-    // the game read its axes at all (see the analog block in pziOSSafeArea.lua).
-    int analog = pref_int(@"zom.analogMovement", 0) ? 1 : 0;
-    NSString *aLine = [NSString stringWithFormat:@"%d\n", analog];
-    [aLine writeToFile:[luaDir stringByAppendingPathComponent:@"pzios_analog.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    [fm removeItemAtPath:[luaDir stringByAppendingPathComponent:@"pzios_analog_bound.txt"] error:nil];   // this run's binding, written by Lua
-    printf("settings: UI margins %s (left %d, top %d, right %d, bottom %d game px), script %s, analog movement %s\n",
-           kName[level], m[0], m[1], m[2], m[3], src ? "installed" : "missing", analog ? "on" : "off");
+    printf("settings: UI margins %s (left %d, top %d, right %d, bottom %d game px), script %s\n",
+           kName[level], m[0], m[1], m[2], m[3], src ? "installed" : "missing");
 }
 
 // Driving layout: ship the vehicle-state Lua script too, and drop any marker from the last session so the game starts on the

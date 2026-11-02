@@ -53,10 +53,8 @@ step exists.
   hold, lift-to-fire and auto, and remembers), a movement stick that
   dead-zones, runs at the first mark and sprints when dragged past the rim, a scroll strip, radial menus and an aim
   stick, saved layouts you can share as JSON, and a virtual gamepad the game sees as a real controller. The movement
-  stick floats under your thumb and latches its direction, and it can also run on an **Analog** engine that hands it to
-  a virtual controller's left stick, for 360° walking with a speed that follows the push (pziOS binds that controller
-  to your character for you, and still sends W/A/S/D, so movement works even if the game is not using controller
-  input). A separate **driving layout** —
+  stick floats under your thumb, latches its direction and reaches full speed before the rim, with Run and Sprint at
+  the marks you set. A separate **driving layout** —
   steering arrows, gas, brake, a latching handbrake and Shift+W/Shift+S cruise control, no stick — takes over by itself
   when you get into a vehicle (or from a DRIVE button), and hands back when you get out.
 - **Real controllers**: remappable, with a stick deadzone, a live input preview, battery level, and optional
