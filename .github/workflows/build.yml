@@ -7,6 +7,10 @@ name: Build
 #   ipa     a testable IPA: this repository's overlay and launcher swapped into an official release IPA, which keeps
 #           that release's Java runtime, graphics libraries and JIT helper
 #
+# The two run side by side rather than one after the other. The IPA job compiles the same sources anyway, and macOS
+# runners are often short of capacity: a compile check that never gets a machine (GitHub cancels it after 15 minutes
+# of waiting) must not take the IPA down with it.
+#
 # It starts on its own for pushes that touch code, and by hand from the Actions tab (with any release tag). The IPA is
 # uploaded as the pziOS-ipa artifact and attached to the draft "builds" release, so it can be downloaded like any other
 # release asset.
@@ -82,7 +86,8 @@ jobs:
 
   ipa:
     name: IPA
-    needs: checks
+    # Deliberately no `needs: checks`. This job compiles the overlay and the launcher itself, so it still catches a
+    # broken build; and when the runner pool is busy it queues next to the compile check instead of behind it.
     runs-on: macos-15
     timeout-minutes: 40
     steps:
