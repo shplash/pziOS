@@ -63,7 +63,7 @@ step exists.
   iPad layouts.
 - **Performance**: memory tiers from what iOS grants the app, four garbage collectors, three JIT compiler tiers,
   ASTC textures with a disk cache, and an experimental Zink backend for mods that need OpenGL 4.5.
-- **A launcher that explains itself**: live status on the home screen (including the movement engine), settings that can
+- **A launcher that explains itself**: live status on the home screen, settings that can
   be searched, the reason for each value, a setup guide, and a log you can read, copy or share right from the home screen.
 
 ## Supported Devices

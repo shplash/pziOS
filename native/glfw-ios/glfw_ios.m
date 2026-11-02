@@ -921,7 +921,7 @@ static CGSize radial_layout(int shape, int n, CGPoint c, CGFloat btn, double spr
         self.thumb.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(-t / 2, -t / 2, t, t)].CGPath;
         self.thumb.fillColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
         self.thumb.position = CGPointMake(f.size.width / 2, f.size.height / 2);
-        self.thumb.shadowColor = UIColor.black.CGColor; self.thumb.shadowOpacity = 0.35;
+        self.thumb.shadowColor = UIColor.blackColor.CGColor; self.thumb.shadowOpacity = 0.35;
         self.thumb.shadowRadius = 3; self.thumb.shadowOffset = CGSizeMake(0, 1);
         [self.layer addSublayer:self.thumb];
         self.deadZone = 0.18; self.pushKey = 340; self.pushAt = 0.85;      // run from 85%...
