@@ -235,6 +235,9 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
 @property (nonatomic, strong) CAShapeLayer *cursorLayer;
 @property (nonatomic, strong) ZOButton *modeButton;
 @property (nonatomic) BOOL mouseActive;              // a physical mouse is connected: it drives the cursor, touch no longer moves it
+@property (nonatomic) BOOL drivingActive;            // the driving layout is on screen instead of the on-foot one
+@property (nonatomic) NSInteger lastVehicleState;    // 0 on foot, 1 in a vehicle, -1 not read yet
+@property (nonatomic, strong) NSTimer *drivePoll;
 - (void)mouseDelta:(CGPoint)d;
 - (void)moveCursorTo:(CGPoint)p;
 - (void)setMouseConnected:(BOOL)on;
@@ -245,7 +248,13 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
 - (void)updateCursorVisibility;
 - (void)setPadConnected:(BOOL)on;
 - (void)installControls;
-- (BOOL)installSavedLayout;
+- (BOOL)installSavedLayout:(NSString *)json;
+- (void)installDefaultControls;
+- (void)applyLayoutDriving:(BOOL)driving;
+- (void)toggleDriving;
+- (BOOL)hasDriveToggle;
+- (void)startDrivePoll;
+- (void)pollVehicle;
 @end
 
 @implementation ZOButton
@@ -269,6 +278,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
     else if (d && self.kind == 2) [gv toggleKeyboard];
     else if (d && self.kind == 3) [gv toggleControls];
     else if (d && self.kind == 4) [gv toggleMode];
+    else if (d && self.kind == 5) [gv toggleDriving];     // the DRIVE / FOOT button switches between the two layouts
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = YES; }
 - (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
@@ -516,9 +526,9 @@ static void frame_rate_hint_start(void) {
 - (void)pressesCancelled:(NSSet<UIPress *> *)p withEvent:(UIPressesEvent *)e { [self press:p action:GLFW_RELEASE]; }
 
 // ---- layout of the overlay
-// Builds the controls from the layout saved by the launcher's touch editor (UserDefaults "zom.touchLayout", JSON). NO = none saved.
-- (BOOL)installSavedLayout {
-    NSString *json = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"];
+// Builds the controls from a layout saved by the launcher's touch editor (UserDefaults "zom.touchLayout" or
+// "zom.drivingLayout", JSON). NO = none saved.
+- (BOOL)installSavedLayout:(NSString *)json {
     NSDictionary *lay = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
     NSArray *items = [lay isKindOfClass:NSDictionary.class] ? lay[@"items"] : nil;
     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
@@ -540,7 +550,7 @@ static void frame_rate_hint_start(void) {
             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
             [self addSubview:j]; [self.controls addObject:j]; continue;
         }
-        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : -1;
+        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"drive"] ? 5 : -1;
         if (k < 0) continue;
         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
         [self addSubview:b];
@@ -578,7 +588,18 @@ static void frame_rate_hint_start(void) {
     [self.layer addSublayer:self.cursorLayer];
     [self moveCursorTo:CGPointMake(self.bounds.size.width / 2, self.bounds.size.height / 2)];
     self.controls = [NSMutableArray array];
-    if ([self installSavedLayout]) { _padConnected = pad_any_connected(); [self updateControlVisibility]; [self setNeedsLayout]; return; }
+    if ([self installSavedLayout:[NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"]]) {
+        _padConnected = pad_any_connected(); [self updateControlVisibility]; [self setNeedsLayout];
+        [self startDrivePoll];
+        return;
+    }
+    [self installDefaultControls];
+    _padConnected = pad_any_connected(); [self updateControlVisibility];
+    [self setNeedsLayout];
+    [self startDrivePoll];
+}
+/// The built-in controls, used when no layout has been saved yet.
+- (void)installDefaultControls {
     ZOJoystick *js = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, 130, 130)]; js.tag = 1; [self addSubview:js]; [self.controls addObject:js];
     struct { const char *t; int kind, code; int tag; } defs[] = {
         {"ATK", 1, 0, 10}, {"AIM", 1, 1, 11}, {"E", 0, 69, 12}, {"RUN", 0, 340, 13}, {"SPC", 0, 32, 14},
@@ -591,9 +612,105 @@ static void frame_rate_hint_start(void) {
     }
     self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton];
     self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton];
-    _padConnected = pad_any_connected(); [self updateControlVisibility];
+}
+// ---- driving layout -------------------------------------------------------------------------------------------------
+// The game's Lua (pziOSDrive.lua) writes "1" in a vehicle and "0" on foot. The overlay polls that file and swaps between
+// the on-foot and driving touch layouts by itself; a DRIVE button, or pressing the button by hand, still works.
+static NSString *read_trimmed(NSString *path) {
+    NSString *s = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    s = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return s.length ? s : nil;
+}
+/// Every place a game build might put the marker: the Zomboid folder's root (where getFileWriter normally writes) and its
+/// Lua folder, plus the pziOS Documents folder itself.
+static NSString *vehicle_state_file(void) {
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count == 0) return nil;
+    NSString *base = docs.firstObject;
+    for (NSString *rel in @[@"home/Zomboid/pzios_vehicle.txt", @"home/Zomboid/Lua/pzios_vehicle.txt",
+                            @"game/Zomboid/pzios_vehicle.txt", @"pzios_vehicle.txt"]) {
+        NSString *s = read_trimmed([base stringByAppendingPathComponent:rel]);
+        if (s) return s;
+    }
+    return nil;
+}
+/// A second source for the same fact: the script also prints a line to the game's output, which lands in jvm.log.
+static NSString *log_vehicle_state(void) {
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count == 0) return nil;
+    NSString *path = [docs.firstObject stringByAppendingPathComponent:@"jvm.log"];
+    NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!h) return nil;
+    unsigned long long len = [h seekToEndOfFile];
+    [h seekToFileOffset:len > 65536 ? len - 65536 : 0];
+    NSData *d = [h readDataToEndOfFile];
+    [h closeFile];
+    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    if (!s) return nil;
+    NSRange car = [s rangeOfString:@"[pziOS] in a vehicle: driving layout" options:NSBackwardsSearch];
+    NSRange foot = [s rangeOfString:@"[pziOS] on foot: normal layout" options:NSBackwardsSearch];
+    if (car.location == NSNotFound && foot.location == NSNotFound) return nil;
+    return (car.location != NSNotFound && (foot.location == NSNotFound || car.location > foot.location)) ? @"1" : @"0";
+}
+- (void)removeControlViews {
+    for (UIView *v in self.controls) {          // nothing may stay held when its view goes away
+        if ([v isKindOfClass:ZOJoystick.class]) [(ZOJoystick *)v reset];
+        else if ([v isKindOfClass:ZOAimStick.class]) [(ZOAimStick *)v reset];
+        [v removeFromSuperview];
+    }
+    [self.controls removeAllObjects];
+    [self.hideButton removeFromSuperview]; self.hideButton = nil;
+    [self.modeButton removeFromSuperview]; self.modeButton = nil;
+}
+/// Puts the on-foot or the driving layout on screen. Used at start-up, by the DRIVE button, and by the automatic switch.
+- (void)applyLayoutDriving:(BOOL)driving {
+    self.drivingActive = driving;
+    [self removeControlViews];
+    NSString *json = [NSUserDefaults.standardUserDefaults stringForKey:(driving ? @"zom.drivingLayout" : @"zom.touchLayout")];
+    if (driving && json.length == 0) json = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"];   // no driving layout saved: keep the controls the player knows
+    if (![self installSavedLayout:json]) [self installDefaultControls];
+    // A driving layout saved by an older build has no way back to the on-foot one, so add one rather than leaving the player
+    // stuck in a car layout they cannot leave.
+    if (driving && ![self hasDriveToggle]) {
+        ZOButton *b = [ZOButton buttonWithTitle:@"FOOT" kind:5 code:0 size:56];
+        b.norm = CGPointMake(0.20, 0.62); b.tag = 21;
+        [self addSubview:b]; [self.controls addObject:b];
+        glfwi_log("driving layout: it has no way back, so a FOOT button was added");
+    }
+    _padConnected = pad_any_connected();
+    [self updateControlVisibility];
     [self setNeedsLayout];
 }
+/// YES when something on screen switches between the two layouts: a DRIVE/FOOT button.
+- (BOOL)hasDriveToggle {
+    for (UIView *v in self.controls)
+        if ([v isKindOfClass:ZOButton.class] && ((ZOButton *)v).kind == 5) return YES;
+    return NO;
+}
+- (void)toggleDriving {
+    [self applyLayoutDriving:!self.drivingActive];
+    glfwi_log("layout: %s", self.drivingActive ? "driving" : "on foot");
+}
+- (void)startDrivePoll {
+    if (self.drivePoll) return;
+    self.lastVehicleState = -1;                      // read the marker once, then only react to changes
+    __weak GLFWiOSView *ws = self;
+    self.drivePoll = [NSTimer timerWithTimeInterval:0.6 repeats:YES block:^(NSTimer *t) { [ws pollVehicle]; }];
+    [NSRunLoop.mainRunLoop addTimer:self.drivePoll forMode:NSRunLoopCommonModes];   // keeps polling while the game holds the run loop
+}
+- (void)pollVehicle {
+    NSString *s = vehicle_state_file();
+    if (s.length == 0) s = log_vehicle_state();
+    if (s.length == 0) return;
+    NSInteger state = s.integerValue != 0 ? 1 : 0;
+    // Only a change switches layouts, so pressing DRIVE by hand is respected until the next vehicle change.
+    if (state == self.lastVehicleState) return;
+    self.lastVehicleState = state;
+    if (state == (self.drivingActive ? 1 : 0)) return;
+    glfwi_log("vehicle: %s, switching to the %s layout", state ? "in a car" : "on foot", state ? "driving" : "on-foot");
+    [self applyLayoutDriving:state == 1];
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     UIEdgeInsets in = self.safeAreaInsets; CGFloat W = self.bounds.size.width, H = self.bounds.size.height;

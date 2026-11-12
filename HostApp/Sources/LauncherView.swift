@@ -437,7 +437,7 @@ private enum Tab: Int, CaseIterable {
     var developerOnly: Bool { self == .tools || self == .log }
 }
 
-private enum Editor: String, Identifiable { case touch, pad, margins, setup; var id: String { rawValue } }
+private enum Editor: String, Identifiable { case touch, driving, pad, margins, setup; var id: String { rawValue } }
 
 /// One line on a settings page. Pages are plain data, so the same rows drive touch, the focus ring and gamepad input.
 struct Row: Identifiable {
@@ -617,7 +617,10 @@ struct SettingsView: View {
                 Row(id: virtualPad ? "padedit" : "touch", title: virtualPad ? "Edit gamepad layout" : "Edit touch layout", kind: .action(destructive: false) { editor = virtualPad ? .pad : .touch },
                     detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
                                        : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own."),
-            ] + [
+            ] + (virtualPad ? [] : [
+                Row(id: "drivingedit", title: "Edit driving layout", kind: .action(destructive: false) { editor = .driving },
+                    detail: "The layout the game switches to by itself while you are in a vehicle: steering on the left and right arrow keys, gas, brake, a handbrake and a FOOT button back to the normal layout. No joystick."),
+            ]) + [
                 Row(id: "n", title: "The on-screen controls hide automatically while a controller, or a keyboard and mouse together, are connected. Changes apply next time the game starts.", kind: .info),
             ]
         case .jit:
@@ -700,7 +703,7 @@ struct SettingsView: View {
             if case .success(let url) = result { model.onImportPairing?(url) }
         }
         .fullScreenCover(item: $editor) { e in
-            switch e { case .touch: TouchLayoutEditor(); case .pad: TouchLayoutEditor(pad: true); case .margins: ScreenMarginEditor(); case .setup: SetupView(model: model, pad: pad) }
+            switch e { case .touch: TouchLayoutEditor(); case .driving: TouchLayoutEditor(driving: true); case .pad: TouchLayoutEditor(pad: true); case .margins: ScreenMarginEditor(); case .setup: SetupView(model: model, pad: pad) }
         }
         .alert("Developer Tools", isPresented: $confirmDev) {
             Button("Enable") { devTools = true }
