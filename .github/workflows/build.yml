@@ -146,6 +146,9 @@ jobs:
           set -euo pipefail
           brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
           mkdir -p HostApp/Frameworks HostApp/runtime
+          # The "Sign bundled JRE" build phase runs sign_jre.sh directly, and a checkout does not always keep its executable
+          # bit (upstream has no CI to have noticed). Fixed here rather than in the project so the branch stays feature-only.
+          chmod +x HostApp/sign_jre.sh
           cp -R "$APP/Frameworks/MetalANGLE.framework" HostApp/Frameworks/      # only linked against; the release copy stays in the IPA
           # The JIT helper extension needs StikJIT, which is not in this repository: keep the release's own, unchanged extension.
           sed -i '' '/^      - target: ZomJITHelper$/d' HostApp/project.yml
