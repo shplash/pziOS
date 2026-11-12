@@ -3,6 +3,9 @@ name: Build
 # TEMPORARY: this file is only on the vehicle-layout-switch branch so the feature can be built into a test IPA. It is
 # removed again before the pull request, so the PR carries only the feature.
 #
+# Build from the Actions tab: Run workflow, then pick the branch to build (main, or vehicle-layout-switch for this
+# feature). A push to either branch builds on its own too.
+#
 # One job per push: it compiles the touch overlay and the launcher, swaps them into an official release IPA (which keeps
 # that release's Java runtime, graphics libraries and JIT helper) and attaches the result to the draft "builds" release.
 #
@@ -24,6 +27,10 @@ on:
     inputs:
       release_tag:
         description: "pziOS release to patch (blank = the latest release)"
+        required: false
+        default: ""
+      branch:
+        description: "Branch to build (leave blank to use the branch you pick above)"
         required: false
         default: ""
 
@@ -54,6 +61,8 @@ jobs:
       HOMEBREW_NO_ENV_HINTS: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || github.ref }}
 
       - name: Use the newest Xcode on the runner
         run: |

@@ -1,0 +1,25 @@
+VERSION = 1,
+
+option FirearmCursor.ShowTargetMarker
+{
+    type = boolean,
+    default = true,
+    page = FirearmCursor,
+    translation = FirearmCursor_ShowTargetMarker,
+}
+
+option FirearmCursor.DisableVanillaHitChanceIndicator
+{
+    type = boolean,
+    default = true,
+    page = FirearmCursor,
+    translation = FirearmCursor_DisableVanillaHitChanceIndicator,
+}
+
+option FirearmCursor.DisableFirearmUseDamageChance
+{
+    type = boolean,
+    default = false,
+    page = FirearmCursor,
+    translation = FirearmCursor_DisableFirearmUseDamageChance,
+}
