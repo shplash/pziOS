@@ -1,6 +1,0 @@
-name=Firearm Cursor
-id=FirearmCursor
-description=Replaces the vanilla firearm crosshair with the normal isometric cursor and adds green / orange / red hit-chance feedback at the actual aiming target. Sandbox toggles hide the vanilla hit-chance indicator and force the vanilla "Firearms use damage chance" setting to Disabled.
-author=Firearm Cursor
-modversion=1.0.0
-pzversion=42.21.0

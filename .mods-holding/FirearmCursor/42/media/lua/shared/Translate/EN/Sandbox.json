@@ -1,9 +1,0 @@
-{
-    "Sandbox_FirearmCursor": "Firearm Cursor",
-    "Sandbox_FirearmCursor_ShowTargetMarker": "Show the coloured target marker",
-    "Sandbox_FirearmCursor_ShowTargetMarker_tooltip": "Draws the green / orange / red marker at the square the game is aiming at while a firearm is aimed. Turn off to keep only the normal isometric cursor.",
-    "Sandbox_FirearmCursor_DisableVanillaHitChanceIndicator": "Disable vanilla hit-chance indicator",
-    "Sandbox_FirearmCursor_DisableVanillaHitChanceIndicator_tooltip": "Hides the valid-target reticle the game colours while aiming. Off leaves the vanilla indicator exactly as the game draws it.",
-    "Sandbox_FirearmCursor_DisableFirearmUseDamageChance": "Disable \"Firearms use damage chance\"",
-    "Sandbox_FirearmCursor_DisableFirearmUseDamageChance_tooltip": "Forces the vanilla sandbox setting FirearmUseDamageChance to Disabled (1) for the session. Off leaves your value alone."
-}
