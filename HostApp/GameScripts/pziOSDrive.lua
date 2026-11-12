@@ -22,7 +22,10 @@ local function update()
     if not getPlayer then return end
     local ok, player = pcall(getPlayer)
     if not ok then return end
-    local inCar = player ~= nil and player.getVehicle ~= nil and player:getVehicle() ~= nil
+    -- No character yet (loading, the menu, a transition): leave the last state alone. Treating this as "on foot" made the
+    -- marker flip back and forth while a world loaded, which the overlay followed.
+    if player == nil then return end
+    local inCar = player.getVehicle ~= nil and player:getVehicle() ~= nil
     inCar = inCar and true or false
     if inCar == last then return end
     last = inCar

@@ -237,6 +237,10 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
 @property (nonatomic) BOOL mouseActive;              // a physical mouse is connected: it drives the cursor, touch no longer moves it
 @property (nonatomic) BOOL drivingActive;            // the driving layout is on screen instead of the on-foot one
 @property (nonatomic) NSInteger lastVehicleState;    // 0 on foot, 1 in a vehicle, -1 not read yet
+@property (nonatomic) NSInteger pendingVehicleState; // the state a change is waiting on (see pollVehicle)
+@property (nonatomic) int pendingVehicleCount;       // how many polls in a row have seen it
+@property (nonatomic) BOOL vehicleFileSeen;          // the marker file has been read once: stop falling back to the log
+@property (nonatomic) CFTimeInterval lastLayoutSwitch;   // a DRIVE press right after a switch is the same finger, not a new one
 @property (nonatomic, strong) NSTimer *drivePoll;
 - (void)mouseDelta:(CGPoint)d;
 - (void)moveCursorTo:(CGPoint)p;
@@ -665,7 +669,9 @@ static NSString *log_vehicle_state(void) {
 }
 /// Puts the on-foot or the driving layout on screen. Used at start-up, by the DRIVE button, and by the automatic switch.
 - (void)applyLayoutDriving:(BOOL)driving {
+    if (driving == self.drivingActive && self.controls.count > 0) return;      // already showing it: rebuilding would cancel touches
     self.drivingActive = driving;
+    self.lastLayoutSwitch = CACurrentMediaTime();
     [self removeControlViews];
     NSString *json = [NSUserDefaults.standardUserDefaults stringForKey:(driving ? @"zom.drivingLayout" : @"zom.touchLayout")];
     if (driving && json.length == 0) json = [NSUserDefaults.standardUserDefaults stringForKey:@"zom.touchLayout"];   // no driving layout saved: keep the controls the player knows
@@ -689,7 +695,11 @@ static NSString *log_vehicle_state(void) {
     return NO;
 }
 - (void)toggleDriving {
+    // The button that was just pressed is gone with the old layout, and the new one puts another button under the same
+    // finger; a press within half a second of the switch is that finger, not a second tap.
+    if (CACurrentMediaTime() - self.lastLayoutSwitch < 0.5) return;
     [self applyLayoutDriving:!self.drivingActive];
+    self.lastVehicleState = self.drivingActive ? 1 : 0;     // do not let the next poll undo a switch made by hand
     glfwi_log("layout: %s", self.drivingActive ? "driving" : "on foot");
 }
 - (void)startDrivePoll {
@@ -701,11 +711,19 @@ static NSString *log_vehicle_state(void) {
 }
 - (void)pollVehicle {
     NSString *s = vehicle_state_file();
-    if (s.length == 0) s = log_vehicle_state();
+    if (s.length > 0) self.vehicleFileSeen = YES;
+    // The log is only a fallback for a build that writes the marker somewhere else. Once the file has been read, the log is
+    // ignored: it still holds this run's older lines, and reading both made the layout flip back and forth.
+    if (s.length == 0 && !self.vehicleFileSeen) s = log_vehicle_state();
     if (s.length == 0) return;
     NSInteger state = s.integerValue != 0 ? 1 : 0;
-    // Only a change switches layouts, so pressing DRIVE by hand is respected until the next vehicle change.
-    if (state == self.lastVehicleState) return;
+    if (state == self.lastVehicleState) { self.pendingVehicleCount = 0; return; }
+    // The game itself reports both states while a world loads (the player is put in and out of the seat), so a change has to
+    // be seen three polls in a row, about two seconds, before the layout follows it.
+    if (state == self.pendingVehicleState) self.pendingVehicleCount++;
+    else { self.pendingVehicleState = state; self.pendingVehicleCount = 1; }
+    if (self.pendingVehicleCount < 3) return;
+    self.pendingVehicleCount = 0;
     self.lastVehicleState = state;
     if (state == (self.drivingActive ? 1 : 0)) return;
     glfwi_log("vehicle: %s, switching to the %s layout", state ? "in a car" : "on foot", state ? "driving" : "on-foot");
