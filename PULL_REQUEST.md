@@ -35,9 +35,8 @@ How it works:
   On foot / Driving switch, plus a DRIVE control to place on either layout. The
   launcher gets an "Edit driving layout" entry.
 
-The driving layout has no joystick on purpose: steering is the left and right
-arrow keys, so the game turns the wheel itself, with gas, brake and handbrake
-next to it.
+The driving layout has no joystick on purpose: steering is A and D, so the game
+turns the wheel itself, with gas, brake and a held E-brake next to it.
 
 Nothing else changes: the existing touch layout, presets, aim stick, margins
 and JIT behaviour are untouched, and a player who never gets in a vehicle sees

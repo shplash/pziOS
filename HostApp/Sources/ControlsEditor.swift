@@ -14,7 +14,8 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var x: Double            // centre, as a fraction of the screen
     var y: Double
     var size: Double         // points
-    var locked: Bool { kind == .hide || kind == .mode }
+    var pinned: Bool? = nil  // the control's key and label are fixed (the driving layout's steering keys)
+    var locked: Bool { kind == .hide || kind == .mode || pinned == true }
     var isStick: Bool { kind == .stick || kind == .aimstick || kind == .padstick }   // HIDE and PAD/TCH can't be removed, or you could lose the controls
 }
 
@@ -100,27 +101,30 @@ enum TouchLayoutStore {
             item("kb", .keyboard, "KB", 0, W - R - 28 - 52, T + 26, 44),
             item("hide", .hide, "HIDE", 0, W - R - 28, T + 26, 44),
             item("mode", .mode, "PAD", 0, W - R - 28 - 4 * 52, T + 26, 44),
-            item("drive", .drive, "DRIVE", 0, W - R - 28 - 5 * 52, T + 26, 44),      // switch to the driving layout by hand
+            item("drive", .drive, "DRIVE", 0, W - R - 28, T + 26 + 56, 44),          // below HIDE, switches to the driving layout
         ])
     }
 
-    /// The driving layout: no stick at all. Steering is the left and right arrow keys, so the game turns the wheel itself
-    /// instead of reading a thumb stick; gas and brake are W and S, and the handbrake latches with Space. Used automatically
-    /// while the player is in a vehicle (pziOSDrive.lua tells the overlay), and from the DRIVE button on the on-foot layout.
+    /// The driving layout: no stick at all. Steering is the A and D keys, so the game turns the wheel itself instead of
+    /// reading a thumb stick; gas and brake are W and S, and the handbrake is held with Space (it only applies while the
+    /// button is down). Used automatically while the player is in a vehicle (pziOSDrive.lua tells the overlay), and from the
+    /// DRIVE button on the on-foot layout.
     static var drivingDefaultLayout: TouchLayout {
         let W = 956.0, H = 440.0, L = 20.0, R = 20.0, B = 14.0, T = 10.0
         func item(_ id: String, _ kind: TouchItem.Kind, _ label: String, _ code: Int, _ px: Double, _ py: Double, _ size: Double) -> TouchItem {
             TouchItem(id: id, kind: kind, label: label, code: code, x: px / W, y: py / H, size: size)
         }
-        return TouchLayout(items: [
-            item("left", .key, "◀", 263, L + 66, H - B - 66, 84),          // left arrow: steer left
-            item("right", .key, "▶", 262, L + 66 + 96, H - B - 66, 84),     // right arrow: steer right
-            item("gas", .key, "GAS", 87, W - R - 66, H - B - 66, 84),       // W
-            item("brake", .key, "BRAKE", 83, W - R - 66, H - B - 162, 72),  // S
-            item("hand", .key, "HAND", 32, W - R - 160, H - B - 66, 64),    // Space: handbrake
-            item("drive", .drive, "FOOT", 0, W - R - 28, T + 26, 44),       // back to the on-foot layout
-            item("hide", .hide, "HIDE", 0, W - R - 84, T + 26, 44),
+        var l = TouchLayout(items: [
+            item("left", .key, "A", 65, L + 96, H - B - 76, 84),            // A: steer left
+            item("right", .key, "D", 68, L + 96 + 96, H - B - 76, 84),       // D: steer right
+            item("gas", .key, "GAS", 87, W - R - 96, H - B - 76, 84),        // W
+            item("brake", .key, "BRAKE", 83, W - R - 96, H - B - 172, 72),   // S
+            item("hand", .key, "E-BRAKE", 32, W - R - 196, H - B - 76, 64),  // Space: held, not toggled
+            item("hide", .hide, "HIDE", 0, W - R - 28, T + 26, 44),          // same corner as the on-foot layout
+            item("drive", .drive, "FOOT", 0, W - R - 28, T + 26 + 56, 44),   // below HIDE
         ])
+        for i in l.items.indices where l.items[i].id == "left" || l.items[i].id == "right" { l.items[i].pinned = true }
+        return l
     }
 
     /// The default virtual gamepad (positions worked out for a 956x440 pt screen): sticks at the bottom corners, D-pad and A/B/X/Y between them,
@@ -365,7 +369,7 @@ struct TouchLayoutEditor: View {
                     Text("On foot").tag(0); Text("Driving").tag(1)
                 }.pickerStyle(.segmented)
                 if driving {
-                    Text("No joystick here on purpose: steering is the left and right arrow keys, so the game turns the wheel itself. This layout takes over by itself when you get into a vehicle, and a FOOT button brings the normal one back.")
+                    Text("No joystick here on purpose: steering is A and D, so the game turns the wheel itself, and the E-brake is held, not toggled. This layout takes over by itself when you get into a vehicle, and the FOOT button brings the normal one back.")
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                         .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 }
@@ -415,7 +419,7 @@ struct TouchLayoutEditor: View {
                         .pickerStyle(.segmented).frame(width: 140)
                 }
             }
-            if item.kind == .key || item.kind == .mouse {
+            if (item.kind == .key || item.kind == .mouse) && !item.locked {
                 HStack {
                     Text("Sends").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
                     Spacer()

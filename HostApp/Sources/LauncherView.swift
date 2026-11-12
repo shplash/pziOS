@@ -619,7 +619,7 @@ struct SettingsView: View {
                                        : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own."),
             ] + (virtualPad ? [] : [
                 Row(id: "drivingedit", title: "Edit driving layout", kind: .action(destructive: false) { editor = .driving },
-                    detail: "The layout the game switches to by itself while you are in a vehicle: steering on the left and right arrow keys, gas, brake, a handbrake and a FOOT button back to the normal layout. No joystick."),
+                    detail: "The layout the game switches to by itself while you are in a vehicle: steering on A and D, gas, brake, an E-brake you hold, and a FOOT button back to the normal layout. No joystick."),
             ]) + [
                 Row(id: "n", title: "The on-screen controls hide automatically while a controller, or a keyboard and mouse together, are connected. Changes apply next time the game starts.", kind: .info),
             ]

@@ -266,6 +266,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
     b.label = [[UILabel alloc] initWithFrame:b.bounds];
     b.label.text = t; b.label.textAlignment = NSTextAlignmentCenter; b.label.textColor = UIColor.whiteColor;
     b.label.font = [UIFont boldSystemFontOfSize:size > 50 ? 15 : 12]; b.label.userInteractionEnabled = NO;
+    b.label.adjustsFontSizeToFitWidth = YES; b.label.minimumScaleFactor = 0.55;      // a longer label (E-BRAKE) shrinks instead of overflowing
     [b addSubview:b.label];
     return b;
 }
